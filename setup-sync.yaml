@@ -1,0 +1,19 @@
+# setup-sync defaults. Every folder is relative to each car folder under iRacing\setups,
+# so "/Garage 61 - Eclipse Motorsport" means setups\<car>\Garage 61 - Eclipse Motorsport.
+defaults:
+  # Folders the current season's setups are copied into, one flat folder per track.
+  # --target-dir on the command line replaces this list for one run.
+  target-dirs:
+    - "/Garage 61 - Rasengrasen Racing"
+    - "/Garage 61 - Eclipse Motorsport"
+
+  # Remove setups labelled this many seasons or more before the current one from the target
+  # track folders (2 at 26S3 removes 26S1 and older). --clean N overrides it for one run and
+  # --no-clean skips it. Use null to clean only when asked.
+  clean:
+    past-seasons: 2
+
+  # Folders never read as sources (glob patterns): other Garage 61 team shares. The target
+  # dirs are always excluded as well.
+  exclude-dirs:
+    - "/Garage 61 - *"

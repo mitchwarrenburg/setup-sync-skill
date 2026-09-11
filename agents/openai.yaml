@@ -1,0 +1,3 @@
+interface:
+  display_name: "Setup Sync"
+  short_description: "Sync current-season iRacing setups into team folders"

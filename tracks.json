@@ -1,0 +1,152 @@
+{
+  "_about": [
+    "Track vocabulary for setup-sync. Keys under 'tracks' are destination folder names (Capitalized, spaced).",
+    "aliases: matched as contiguous token runs anywhere in a name (case, accents, punctuation and camelCase ignored).",
+    "exact: matched only when a whole folder name equals it; always an explicit layout (iRacing track dirnames).",
+    "base=false: the family name is never a destination; a variant must be determined or the file is unresolved.",
+    "variants.split: 'always' = own folder; 'if-exists' = own folder only when the team already has one, else the base.",
+    "markers: layout words elsewhere in the path or file name that pick a variant.",
+    "weak_markers: weaker evidence (series names, loose words such as Nordschleife); any layout marker outranks them.",
+    "rules: learned overrides, first match wins. pattern is a case-insensitive regex on the car-relative path with '/' separators."
+  ],
+  "ignore_tokens": [
+    "circuit", "circuito", "international", "internacional", "raceway", "speedway", "motor", "motorsport",
+    "motorsports", "course", "full", "fullcourse", "road", "the", "de", "des", "du", "do", "of", "at", "park",
+    "autodromo", "nazionale", "internazionale", "pits", "gp", "grand", "prix", "grandprix", "track", "world"
+  ],
+  "tracks": {
+    "Adelaide": {"aliases": ["adelaide", "adelaide street circuit"]},
+    "Algarve": {"aliases": ["algarve", "portimao", "autodromo internacional do algarve"], "exact": ["algarve gp"]},
+    "Aragon": {"aliases": ["aragon", "motorland aragon"], "exact": ["aragon outer"]},
+    "Atlanta": {"aliases": ["atlanta", "atlanta motor speedway"]},
+    "Auto Club": {"aliases": ["auto club", "autoclub", "auto club speedway", "fontana"]},
+    "Barber": {"aliases": ["barber", "barber motorsports park"]},
+    "Barcelona": {"aliases": ["barcelona", "catalunya", "barcelona catalunya"], "exact": ["barcelona historic", "barcelona gp"]},
+    "Bathurst": {"aliases": ["bathurst", "mount panorama", "mt panorama", "pan"]},
+    "Belle Isle": {"aliases": ["belle isle", "belleisle", "detroit"]},
+    "Brands Hatch": {"aliases": ["brands hatch", "brandshatch"], "exact": ["brandshatch grandprix", "brandshatch indy"]},
+    "COTA": {"aliases": ["cota", "circuit of the americas", "austin"]},
+    "Charlotte": {"aliases": ["charlotte", "charlotte roval", "roval"]},
+    "Chicago": {"aliases": ["chicago", "chicago street", "chicago street course"]},
+    "Coronado": {"aliases": ["coronado", "naval base coronado", "qualcomm", "qualcommm", "qualcomm circuit"]},
+    "Daytona": {"aliases": ["daytona", "day", "d24"], "exact": ["daytona 2011 road", "daytona 2011 oval", "daytona road"]},
+    "Donington": {"aliases": ["donington", "donington park"]},
+    "Fuji": {"aliases": ["fuji"], "exact": ["fuji nochicane", "fuji gp"]},
+    "Hockenheim": {"aliases": ["hockenheim", "hockenheimring", "hocke"], "exact": ["hockenheim gp"]},
+    "Hungaroring": {"aliases": ["hungaroring"]},
+    "Imola": {"aliases": ["imola", "enzo e dino ferrari"], "exact": ["imola gp"]},
+    "Indianapolis": {"aliases": ["indianapolis", "indy", "indianapolis motor speedway"], "exact": ["indianapolis 2022 road", "indianapolis road"]},
+    "Interlagos": {"aliases": ["interlagos", "jose carlos pace"], "exact": ["interlagos gp"]},
+    "Jerez": {"aliases": ["jerez", "jerm"]},
+    "Knockhill": {"aliases": ["knockhill"]},
+    "Laguna Seca": {"aliases": ["laguna seca", "lagunaseca"]},
+    "Las Vegas": {"aliases": ["las vegas", "vegas"], "exact": ["vegas oval"]},
+    "Le Mans": {"aliases": ["le mans", "lemans", "24 heures du mans", "sarthe"], "exact": ["lemans full"]},
+    "Ledenon": {"aliases": ["ledenon"]},
+    "Lime Rock": {"aliases": ["lime rock", "limerock"]},
+    "Long Beach": {"aliases": ["long beach", "longbeach"]},
+    "Magny Cours": {"aliases": ["magny cours", "magnycours"], "exact": ["magnycours gp"]},
+    "Mexico City": {"aliases": ["mexico city", "mexicocity", "mexico", "hermanos rodriguez"], "exact": ["mexicocity gp"]},
+    "Miami GP": {"aliases": ["miami", "miami gp", "miami international autodrome"]},
+    "Mid-Ohio": {"aliases": ["mid ohio", "midohio"]},
+    "Milwaukee": {"aliases": ["milwaukee", "milwaukee mile"]},
+    "Misano": {"aliases": ["misano", "misano world circuit"], "exact": ["misano gp"]},
+    "Montreal": {"aliases": ["montreal", "gilles villeneuve", "circuit gilles villeneuve"]},
+    "Monza": {
+      "aliases": ["monza"],
+      "exact": ["monza full", "monza gp"],
+      "variants": {
+        "Monza Combined": {"split": "if-exists", "aliases": ["monza combined"], "exact": ["monza combined"], "markers": ["combined"]}
+      }
+    },
+    "Mosport": {"aliases": ["mosport", "canadian tire", "canadian tire motorsport park", "canadian tire motorsports park", "ctmp"]},
+    "Motegi": {"aliases": ["motegi", "twin ring", "twinring", "mobility resort motegi"], "exact": ["twinring fullrc", "motegi fullrc"]},
+    "Mugello": {"aliases": ["mugello"], "exact": ["mugello gp"]},
+    "Nashville": {"aliases": ["nashville", "nashville superspeedway"]},
+    "Navarra": {"aliases": ["navarra"]},
+    "Nurburgring": {
+      "base": false,
+      "aliases": ["nurburgring", "nuerburgring", "nurb", "nurburgring combined", "nuerburgring combined", "nurb combined",
+                  "nordschleife"],
+      "variants": {
+        "Nurb GP": {
+          "split": "always",
+          "aliases": ["nurb gp", "nurburgring gp", "nuerburgring gp", "nurburgring grand prix", "nurburgring grand prix strecke",
+                      "nurburgring grand pix", "nurburgring gp strecke", "nurburgring sprint", "nurburgring sprintstrecke"],
+          "exact": ["nurburgring gp", "nurburgring gpbes", "nurburgring gpnochicane", "nurburgring sprint", "nurburgring sprintchicane"],
+          "markers": ["gp", "grand prix", "grand pix", "grandprix", "grand prix strecke", "gp strecke", "sprint", "sprintstrecke",
+                      "sprintchicane", "bes", "wec", "beswec", "mullerstrecke"],
+          "weak_markers": ["dtm", "creventic"]
+        },
+        "Nurb VLN": {
+          "split": "always",
+          "aliases": ["nurb vln", "nurb nec", "nord vln", "nurburgring vln", "nec", "nls", "vln", "gesamtstrecke vln",
+                      "nurburgring endurance championship"],
+          "exact": ["nurburgring combinedshortb"],
+          "markers": ["vln", "nls", "nec", "gesamtstrecke vln", "combinedshortb", "shortb", "endurance championship"]
+        },
+        "Nurb Combined 24H": {
+          "split": "always",
+          "aliases": ["nurb combined 24h", "nurb 24", "nurb24", "nurb 24h", "nurburgring 24h", "nuerburgring 24h", "gesamtstrecke 24h"],
+          "exact": ["nurburgring combined"],
+          "markers": ["24h", "24hr", "24hrs", "24hours", "gesamtstrecke 24h"]
+        },
+        "Nurb Long": {
+          "split": "always",
+          "aliases": ["nurb long", "nurburgring long", "gesamtstrecke long"],
+          "exact": ["nurburgring combinedlong"],
+          "markers": ["long", "combinedlong", "gesamtstrecke long"]
+        },
+        "Nordschleife": {
+          "split": "always",
+          "aliases": ["industriefahrten", "touristenfahrten"],
+          "exact": ["nurburgring nordschleife"],
+          "markers": ["industriefahrten", "touristenfahrten"],
+          "weak_markers": ["nordschleife"]
+        }
+      }
+    },
+    "Okayama": {"aliases": ["okayama"], "exact": ["okayama full"]},
+    "Oran Park": {"aliases": ["oran park", "oranpark"]},
+    "Oschersleben": {"aliases": ["oschersleben"], "exact": ["oschersleben gp"]},
+    "Oulton Park": {"aliases": ["oulton park", "oultonpark", "oulton"]},
+    "Phillip Island": {"aliases": ["phillip island", "phillipisland"]},
+    "Pocono": {"aliases": ["pocono"]},
+    "Portland": {"aliases": ["portland", "portland international raceway"]},
+    "Red Bull Ring": {"aliases": ["red bull ring", "redbullring", "spielberg", "rbr"]},
+    "Road America": {"aliases": ["road america", "roadamerica", "ramerica", "rdamerica", "roadam", "ramer"], "exact": ["roadamerica full"]},
+    "Road Atlanta": {"aliases": ["road atlanta", "roadatlanta", "rdatlanta", "michelin raceway"], "exact": ["roadatlanta full"]},
+    "Rudskogen": {"aliases": ["rudskogen", "rudskogen motorsenter"]},
+    "Sachsenring": {"aliases": ["sachsenring"]},
+    "Sebring": {"aliases": ["sebring", "sbr"], "exact": ["sebring international"]},
+    "Sebring Club": {"aliases": ["sebring club"], "exact": ["sebring club"]},
+    "Silverstone": {"aliases": ["silverstone"], "exact": ["silverstone 2019 gp", "silverstone 2019 international"]},
+    "Snetterton": {"aliases": ["snetterton"]},
+    "Sonoma": {"aliases": ["sonoma"]},
+    "Spa": {
+      "aliases": ["spa", "spa francorchamps", "spagp", "spa gp"],
+      "exact": ["spa 2024 up", "spa up"],
+      "variants": {
+        "Spa24": {
+          "split": "if-exists",
+          "aliases": ["spa24", "spa 24h", "spa 24hr", "spa 24 hours"],
+          "exact": ["spa 2024 combined", "spa combined", "spa 24", "spa 24h", "spa24"],
+          "markers": ["24h", "24hr", "24hrs", "24hours"]
+        }
+      }
+    },
+    "St. Pete": {"aliases": ["st pete", "stpete", "st petersburg", "stpetersburg", "streets of st petersburg"]},
+    "Summit Point": {"aliases": ["summit point", "summitpoint"], "exact": ["summit summit raceway", "summit jefferson"]},
+    "Suzuka": {"aliases": ["suzuka", "suz"], "exact": ["suzuka grandprix", "suzuka east", "suzuka west"]},
+    "The Bend": {"aliases": ["the bend", "thebend"], "exact": ["thebend international", "thebend club"]},
+    "Thruxton": {"aliases": ["thruxton"]},
+    "Tsukuba": {"aliases": ["tsukuba"]},
+    "VIR": {"aliases": ["vir", "virginia", "virginia international raceway"], "exact": ["virginia 2022 full"]},
+    "WWT Raceway": {"aliases": ["wwt", "wwtr", "wwt raceway", "world wide technology", "world wide technology raceway", "gateway"]},
+    "Watkins Glen": {"aliases": ["watkins glen", "watkinsglen", "watkins", "glen", "wgi", "wgb"],
+                     "exact": ["watkinsglen 2021 fullcourse", "watkinsglen 2021 classic", "watkinsglen fullcourse"]},
+    "Zandvoort": {"aliases": ["zandvoort", "zand", "circuit park zandvoort"], "exact": ["zandvoort 2023 gp"]},
+    "Zolder": {"aliases": ["zolder"]}
+  },
+  "rules": []
+}
