@@ -4,12 +4,16 @@ Run from the repository root: python -m unittest discover -s scripts -p test_set
 """
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
 import unittest
 from datetime import date, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import setup_sync  # noqa: E402
@@ -160,26 +164,66 @@ class TrackTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_shipped_config(self):
-        config = load_config(SKILL_DIR / "setup-sync.yaml")
+    def test_explicitly_disabled_cleanup_config(self):
+        # The checkout's defaults are user-editable; exercise a fixed config fixture.
+        config = self.read_config(f'defaults:\n  target-dirs:\n    - "/{RASEN}"\n    - "/{ECLIPSE}"\n'
+                                  '  clean-source:\n    enabled: false\n    exclude:\n      - "/Garage 61*"\n'
+                                  '  clean-target:\n    enabled: false\n    past-season-count: 2\n')
         self.assertEqual(config.target_dirs, (RASEN, ECLIPSE))
-        self.assertEqual(config.clean_past_seasons, 2)
-        self.assertEqual(config.exclude_dirs, ("Garage 61 - *",))
+        self.assertFalse(config.clean_source_enabled)
+        self.assertEqual(config.clean_source_exclude, ("Garage 61*",))
+        self.assertFalse(config.clean_target_enabled)
+        self.assertEqual(config.clean_target_past_season_count, 2)
+
+    def read_config(self, text):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "setup-sync.yaml"
+            path.write_text(text, encoding="utf-8")
+            return load_config(path)
+
+    def test_cleanup_is_disabled_when_omitted(self):
+        config = self.read_config("defaults:\n  target-dirs:\n    - /Team\n")
+        self.assertFalse(config.clean_source_enabled)
+        self.assertFalse(config.clean_target_enabled)
+        self.assertEqual(config.clean_source_exclude, ())
+        self.assertEqual(config.clean_target_past_season_count, 2)
+
+    def test_cleanup_settings(self):
+        config = self.read_config('defaults:\n  clean-source:\n    enabled: true\n    exclude:\n'
+                                  '      - "/Garage 61*"\n      - /Shared/Keep\n'
+                                  '  clean-target:\n    enabled: true\n    past-season-count: 3\n')
+        self.assertTrue(config.clean_source_enabled)
+        self.assertTrue(config.clean_target_enabled)
+        self.assertEqual(config.clean_source_exclude, ("Garage 61*", "Shared/Keep"))
+        self.assertEqual(config.clean_target_past_season_count, 3)
+        self.assertEqual(self.read_config("defaults:\n  clean-source:\n    exclude: []\n").clean_source_exclude, ())
 
     def test_yaml_subset(self):
         text = ('defaults:  # comment\n  target-dirs:\n  - "/Team #1"\n  - /Plain Team\n'
-                "  clean:\n    past-seasons: ~\n")
+                "  clean-source:\n    enabled: false\n    exclude: ~\n")
         self.assertEqual(parse_yaml(text), {"defaults": {"target-dirs": ["/Team #1", "/Plain Team"],
-                                                         "clean": {"past-seasons": None}}})
+                                                         "clean-source": {"enabled": False, "exclude": None}}})
 
     def test_invalid_config_is_an_error_not_a_guess(self):
         for text in ("defaults:\n\ttarget-dirs: []\n", "defaults:\n  target-dirs:\n    - name: x\n",
                      "defaults:\n  targets:\n    - /x\n", "other: 1\n", 'defaults:\n  target-dirs:\n    - "/x\n',
-                     "defaults:\n  clean:\n    past-seasons: 0\n", "defaults:\n  clean:\n    past-seasons: two\n"):
-            path = Path(tempfile.mkdtemp()) / "setup-sync.yaml"
-            path.write_text(text, encoding="utf-8")
+                     "defaults:\n  clean:\n    past-seasons: 2\n", "defaults:\n  exclude-dirs:\n    - /x\n",
+                     "defaults:\n  clean-source: false\n", "defaults:\n  clean-target: true\n",
+                     "defaults:\n  clean-target:\n    past-seasons: 2\n",
+                     "defaults:\n  clean-source:\n    exclude: /x\n",
+                     "defaults:\n  clean-source:\n    exclude:\n      - /../outside\n",
+                     "defaults:\n  clean-source:\n    unexpected: true\n"):
             with self.assertRaises(ConfigError, msg=text):
-                load_config(path)
+                self.read_config(text)
+
+    def test_enabled_requires_a_boolean_and_season_count_a_positive_integer(self):
+        for section in ("clean-source", "clean-target"):
+            for value in ("0", "1", "null", '"true"', "yes", "[]"):
+                with self.assertRaises(ConfigError, msg=f"{section}: {value}"):
+                    self.read_config(f"defaults:\n  {section}:\n    enabled: {value}\n")
+        for value in ("0", "-1", "null", "true", "2.5", "two"):
+            with self.assertRaises(ConfigError, msg=value):
+                self.read_config(f"defaults:\n  clean-target:\n    past-season-count: {value}\n")
 
     def test_target_dirs_are_relative_to_the_car_folder(self):
         self.assertEqual(relative_dir("/Garage 61 - Eclipse Motorsport"), ECLIPSE)
@@ -196,6 +240,7 @@ class PlanTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.car = self.root / "ferrari296gt3"
+        self.cars = [self.car]
         self.eclipse = self.car / ECLIPSE
         self.rasen = self.car / RASEN
         for folder in (self.eclipse / "Spa", self.rasen / "LeMans", self.rasen / "Spa24"):
@@ -207,12 +252,36 @@ class PlanTests(unittest.TestCase):
         self.write(f"{ECLIPSE}/Spa/GNG/26S3-W04-GnG-Spa24-Ferrari-Q.sto", b"spa24")
         self.write(f"{RASEN}/Spa24/26S3-W04-GnG-Spa24-Ferrari-Q.sto", b"edited")
         self.config = self.config_file("")
-        # Real runs send removed files to the Recycle Bin; a test tree just deletes them.
-        self.saved_discard, setup_sync.discard = setup_sync.discard, Path.unlink
+        # Keep everything recycled by a test in a fake bin, including whole directory trees.
+        self.bin = self.root / "recycle-bin"
+        self.bin.mkdir()
+        self.discarded = []
+        self.discard_patch = patch.object(setup_sync, "discard", side_effect=self.fake_recycle)
+        self.discard_patch.start()
 
     def tearDown(self):
-        setup_sync.discard = self.saved_discard
+        self.discard_patch.stop()
         self.tmp.cleanup()
+
+    def fake_recycle(self, path: Path) -> None:
+        resolved = path.resolve()
+        car = next((car for car in self.cars if resolved.is_relative_to(car.resolve())), None)
+        self.assertIsNotNone(car)
+        self.assertNotEqual(resolved, car.resolve())
+        self.discarded.append(path.relative_to(self.car if car == self.car else self.root).as_posix())
+        path.rename(self.bin / str(len(self.discarded)))
+
+    def another_car(self) -> Path:
+        car = self.root / "second-car"
+        (car / ECLIPSE / "Spa").mkdir(parents=True)
+        (car / "26S3-Spa-Q.sto").write_bytes(b"second car setup")
+        (car / ECLIPSE / "Spa/25S1-Spa-Q.sto").write_bytes(b"second car old setup")
+        self.cars.append(car)
+        return car
+
+    def snapshot(self) -> dict:
+        return {p.relative_to(self.root): p.read_bytes() if p.is_file() else None
+                for car in self.cars for p in car.rglob("*")}
 
     def config_file(self, extra: str, name: str = "setup-sync.yaml") -> Path:
         path = self.root / name
@@ -226,9 +295,11 @@ class PlanTests(unittest.TestCase):
         os.utime(path, (when.timestamp(), when.timestamp()))
         return path
 
-    def run_sync(self, *extra: str, config: Path | None = None) -> int:
+    def run_sync(self, *extra: str, config: Path | None = None,
+                 cars: tuple[str, ...] = ("ferrari296gt3",)) -> int:
+        scope = [arg for car in cars for arg in ("--car", car)]
         return setup_sync.main(["--season", "26S3", "--season-start", "2026-06-16", "--root", str(self.root),
-                                "--car", "ferrari296gt3", "--config", str(config or self.config), *extra])
+                                *scope, "--config", str(config or self.config), *extra])
 
     def nested(self) -> list[str]:
         """Every folder inside a track folder of either target."""
@@ -236,13 +307,71 @@ class PlanTests(unittest.TestCase):
                       for track in team.iterdir() if track.is_dir() for p in track.rglob("*") if p.is_dir())
 
     def test_dry_run_changes_nothing(self):
-        before = sorted(p.relative_to(self.car) for p in self.car.rglob("*"))
-        self.assertEqual(self.run_sync("--clean", "1"), 0)
-        self.assertEqual(sorted(p.relative_to(self.car) for p in self.car.rglob("*")), before)
+        old = self.write(f"{ECLIPSE}/Imola/25S1-Imola-Q.sto", b"old")
+        before = self.snapshot()
+        report = self.root / "report.json"
+        self.assertEqual(self.run_sync("--dry-run", "--clean-source", "--clean-target", "--clean-target-seasons", "1",
+                                       "--report", str(report)), 0)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.discarded, [])
+        plan = json.loads(report.read_text())[0]
+        self.assertEqual({Path(p).name for p in plan["clean_source"]},
+                         {"Garage 61", "P1Doks"})
+        self.assertIn(str(old), [path for team in plan["targets"] for path, _ in team["clean"]])
+
+    def test_default_applies_to_all_eligible_cars_with_configured_cleanup(self):
+        second = self.another_car()
+        old = self.write(f"{ECLIPSE}/Imola/25S1-Imola-Q.sto", b"old")
+        orphan = self.root / "no-targets"
+        orphan.mkdir()
+        untouched = orphan / "26S3-Spa-Q.sto"
+        untouched.write_bytes(b"no target")
+        config = self.config_file('  clean-source:\n    enabled: true\n    exclude:\n      - "/Garage 61*"\n'
+                                  '  clean-target:\n    enabled: true\n', "enabled.yaml")
+        report = self.root / "default-report.json"
+        self.assertEqual(self.run_sync("--report", str(report), config=config, cars=()), 0)
+        self.assertEqual((second / ECLIPSE / "Spa/26S3-Spa-Q.sto").read_bytes(), b"second car setup")
+        self.assertTrue((self.eclipse / "Le Mans/26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
+        self.assertFalse(old.exists())
+        self.assertFalse((second / ECLIPSE / "Spa/25S1-Spa-Q.sto").exists())
+        self.assertFalse((second / "26S3-Spa-Q.sto").exists())
+        self.assertFalse((self.car / "P1Doks").exists())
+        self.assertTrue((self.car / "Garage 61").exists())
+        self.assertEqual(untouched.read_bytes(), b"no target")
+        self.assertEqual({p["car"] for p in json.loads(report.read_text())}, {self.car.name, second.name})
+
+    def test_dry_run_previews_all_cars_by_default_or_with_all_flag(self):
+        second = self.another_car()
+        config = self.config_file('  clean-source:\n    enabled: true\n  clean-target:\n    enabled: true\n')
+        before = self.snapshot()
+        report = self.root / "preview.json"
+        for scope in ((), ("--all",)):
+            with self.subTest(scope=scope):
+                self.assertEqual(self.run_sync(*scope, "--dry-run", "--report", str(report),
+                                               config=config, cars=()), 0)
+                plans = json.loads(report.read_text())
+                self.assertEqual({p["car"] for p in plans}, {self.car.name, second.name})
+                self.assertTrue(all(p["clean_source"] for p in plans))
+                self.assertTrue(any(t["clean"] for p in plans for t in p["targets"]))
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(self.discarded, [])
+
+    def test_car_flag_limits_the_default_all_car_scope(self):
+        second = self.another_car()
+        self.assertEqual(self.run_sync(), 0)
+        self.assertTrue((self.eclipse / "Le Mans/26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
+        self.assertFalse((second / ECLIPSE / "Spa/26S3-Spa-Q.sto").exists())
+        self.assertEqual((second / "26S3-Spa-Q.sto").read_bytes(), b"second car setup")
+
+    def test_all_and_car_cannot_be_combined(self):
+        before = self.snapshot()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.run_sync("--all")
+        self.assertEqual(self.snapshot(), before)
 
     def test_apply_copies_flat_reuses_folders_and_overwrites_same_names(self):
         nested = self.nested()
-        self.assertEqual(self.run_sync("--apply"), 0)
+        self.assertEqual(self.run_sync(), 0)
         self.assertTrue((self.eclipse / "Le Mans" / "26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
         self.assertTrue((self.rasen / "LeMans" / "26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())  # existing spelling
         self.assertFalse((self.rasen / "Le Mans").exists())
@@ -255,35 +384,51 @@ class PlanTests(unittest.TestCase):
         self.assertEqual((self.rasen / "Spa24" / "26S3-W04-GnG-Spa24-Ferrari-Q.sto").read_bytes(), b"spa24")
         self.assertEqual(list(self.car.glob("Garage 61 - */**/old.sto")), [])
         self.assertEqual(self.nested(), nested)             # no folder is created inside a track folder
-        self.assertEqual(self.run_sync("--apply"), 0)       # a second run finds nothing to change
+        self.assertEqual(self.run_sync(), 0)       # a second run finds nothing to change
         self.assertEqual(self.nested(), nested)
 
-    def test_other_team_shares_are_never_sources(self):
+    def test_only_target_dirs_are_excluded_as_sources(self):
         self.write("Garage 61 - Radian Motorsport/Spa/26S3-W03-Radian-Spa-Q.sto", b"theirs")
-        self.assertEqual(self.run_sync("--apply"), 0)
-        self.assertEqual(list(self.car.glob(f"{ECLIPSE}/**/26S3-W03-Radian-Spa-Q.sto")), [])
+        self.write(f"{ECLIPSE}/Spa/26S3-TargetOnly-Spa-Q.sto", b"target only")
+        self.assertEqual(self.run_sync(), 0)
+        self.assertEqual((self.eclipse / "Spa/26S3-W03-Radian-Spa-Q.sto").read_bytes(), b"theirs")
+        self.assertEqual(list(self.rasen.rglob("26S3-TargetOnly-Spa-Q.sto")), [])
 
     def test_target_dir_flag_replaces_the_configured_targets(self):
-        self.assertEqual(self.run_sync("--apply", "--target-dir", f"/{ECLIPSE}"), 0)
+        self.assertEqual(self.run_sync("--target-dir", f"/{ECLIPSE}"), 0)
         self.assertTrue((self.eclipse / "Le Mans" / "26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
         self.assertFalse((self.rasen / "LeMans" / "26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
         (self.car / "Shared" / "Team A").mkdir(parents=True)
-        self.assertEqual(self.run_sync("--apply", "--target-dir", "/Shared/Team A"), 0)
+        self.assertEqual(self.run_sync("--target-dir", "/Shared/Team A"), 0)
         self.assertTrue((self.car / "Shared" / "Team A" / "Le Mans" / "26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
 
-    def test_configured_clean_is_the_default_and_no_clean_skips_it(self):
+    def test_target_cleanup_requires_enabled_or_flag(self):
         old = f"{ECLIPSE}/Imola/25S4-W04-GnG-Imola-Ferrari-Q.sto"
         self.write(old, b"old")
-        self.assertEqual(self.run_sync("--apply", "--no-clean",
-                                       config=self.config_file("  clean:\n    past-seasons: 2\n", "clean.yaml")), 0)
+        disabled = self.config_file("  clean-target:\n    enabled: false\n    past-season-count: 2\n", "disabled.yaml")
+        self.assertEqual(self.run_sync("--clean-target-seasons", "1", config=disabled), 0)
         self.assertTrue((self.car / old).exists())
-        self.assertEqual(self.run_sync("--apply", config=self.root / "clean.yaml"), 0)
+        self.assertEqual(self.run_sync("--clean-target", config=disabled), 0)
         self.assertFalse((self.car / old).exists())
+        self.write(old, b"old again")
+        enabled = self.config_file("  clean-target:\n    enabled: true\n    past-season-count: 2\n", "enabled.yaml")
+        self.assertEqual(self.run_sync(config=enabled), 0)
+        self.assertFalse((self.car / old).exists())
+        self.assertTrue((self.car / "P1Doks").is_dir())
+        self.assertIn(f"{ECLIPSE}/Imola", self.discarded)  # empty folders also use the bin
+
+    def test_target_seasons_flag_overrides_enabled_config(self):
+        previous = self.write(f"{ECLIPSE}/Spa/26S2-Spa-Q.sto", b"old")
+        config = self.config_file("  clean-target:\n    enabled: true\n    past-season-count: 3\n", "clean.yaml")
+        self.assertEqual(self.run_sync(config=config), 0)
+        self.assertTrue(previous.exists())
+        self.assertEqual(self.run_sync("--clean-target-seasons", "1", config=config), 0)
+        self.assertFalse(previous.exists())
 
     def test_same_name_in_different_tracks_is_copied_to_each(self):
         self.write("P1Doks/spa/2026-S3/fixed.sto", b"spa")
         self.write("P1Doks/bathurst/2026-S3/fixed.sto", b"bathurst")
-        self.assertEqual(self.run_sync("--apply"), 0)
+        self.assertEqual(self.run_sync(), 0)
         self.assertEqual((self.eclipse / "Spa" / "fixed.sto").read_bytes(), b"spa")
         self.assertEqual((self.eclipse / "Bathurst" / "fixed.sto").read_bytes(), b"bathurst")
 
@@ -298,7 +443,7 @@ class PlanTests(unittest.TestCase):
         # A P1Doks carry-over: labelled 25S3, but offered for 26S3, so it is current.
         self.write("P1Doks/spa/2026-S3/P1Doks_296GT3_Spa_GTS_E_25S3W4.sto", b"p1")
         self.write(f"{ECLIPSE}/Spa/P1Doks_296GT3_Spa_GTS_E_25S3W4.sto", b"p1")
-        self.assertEqual(self.run_sync("--apply", "--clean", "2"), 0)
+        self.assertEqual(self.run_sync("--clean-target", "--clean-target-seasons", "2"), 0)
         self.assertFalse((self.eclipse / "Imola" / "25S4-W04-GnG-Imola-Ferrari-Q.sto").exists())
         self.assertTrue((self.eclipse / "Imola" / "old" / "25S4-W03-GnG-Imola-Ferrari-R.sto").exists())  # subfolder
         self.assertFalse((self.rasen / "Sebring").exists())                                             # emptied
@@ -307,19 +452,179 @@ class PlanTests(unittest.TestCase):
         self.assertTrue((self.eclipse / "Watkins Glen" / "Teammate_Ferrari296_WatkinsGlen_V1.sto").exists())
         self.assertTrue((self.eclipse / "Spa" / "HYMO_GTS_26S2_F296_Spa_CQ.sto").exists())
         self.assertTrue((self.eclipse / "Spa" / "P1Doks_296GT3_Spa_GTS_E_25S3W4.sto").exists())
-        self.assertEqual(self.run_sync("--apply", "--clean", "1"), 0)
+        self.assertEqual(self.run_sync("--clean-target", "--clean-target-seasons", "1"), 0)
         self.assertFalse((self.eclipse / "Spa" / "HYMO_GTS_26S2_F296_Spa_CQ.sto").exists())
         self.assertTrue((self.eclipse / "Spa" / "P1Doks_296GT3_Spa_GTS_E_25S3W4.sto").exists())
 
     def test_clean_needs_at_least_one_season(self):
-        with self.assertRaises(SystemExit):
-            self.run_sync("--clean", "0")
+        for value in ("0", "-1", "two", "1.5"):
+            with self.assertRaises(SystemExit):
+                self.run_sync("--clean-target", "--clean-target-seasons", value)
+
+    def test_removed_flags_are_rejected(self):
+        for flags in (("--clean", "2"), ("--no-clean",), ("--apply",)):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                self.run_sync(*flags)
+
+    def test_source_cleanup_is_opt_in_and_preserved_folders_are_still_sources(self):
+        config = self.config_file('  clean-source:\n    enabled: false\n    exclude:\n      - "/Garage 61*"\n')
+        self.write("Garage 61 - Radian Motorsport/Spa/26S3-W03-Radian-Spa-Q.sto", b"theirs")
+        self.write("notes.txt", b"notes")
+        self.write("misc/unlabelled.sto", b"unlabelled")
+        (self.car / "empty").mkdir()
+        old_target = self.write(f"{ECLIPSE}/Spa/25S1-Spa-Q.sto", b"old target")
+        self.assertEqual(self.run_sync(config=config), 0)
+        self.assertTrue((self.car / "notes.txt").exists())
+        self.assertTrue((self.car / "P1Doks").exists())
+        self.assertEqual(self.run_sync("--clean-source", config=config), 0)
+        self.assertEqual({p.name for p in self.car.iterdir()},
+                         {ECLIPSE, RASEN, "Garage 61", "Garage 61 - Radian Motorsport"})
+        self.assertTrue(old_target.exists())
+        self.assertEqual((self.eclipse / "Spa/26S3-W03-Radian-Spa-Q.sto").read_bytes(), b"theirs")
+        self.assertEqual((self.eclipse / "Nurb VLN/P1Doks_FerrariGT3_NEC_Ev2_26S2.sto").read_bytes(), b"nec")
+        self.assertTrue({"notes.txt", "misc", "empty", "P1Doks"}.issubset(self.discarded))
+        self.assertTrue(any(p.read_bytes() == b"notes" for p in self.bin.iterdir() if p.is_file()))
+
+    def test_source_exclude_flag_replaces_config_and_is_repeatable(self):
+        config = self.config_file('  clean-source:\n    enabled: true\n    exclude:\n      - "/Garage 61*"\n')
+        self.write("notes.txt", b"keep")
+        self.assertEqual(self.run_sync("--clean-source-exclude", "/p1DOKS",
+                                       "--clean-source-exclude", "/*.txt", config=config), 0)
+        self.assertEqual({p.name for p in self.car.iterdir()}, {ECLIPSE, RASEN, "P1Doks", "notes.txt"})
+        self.assertTrue((self.eclipse / "Le Mans/26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
+
+    def test_source_exclude_flag_alone_does_not_enable_cleanup(self):
+        before = sorted(p.relative_to(self.car) for p in self.car.rglob("*"))
+        self.assertEqual(self.run_sync("--dry-run", "--clean-source-exclude", "/P1Doks"), 0)
+        self.assertEqual(sorted(p.relative_to(self.car) for p in self.car.rglob("*")), before)
+        report = self.root / "report.json"
+        self.assertEqual(self.run_sync("--clean-source-exclude", "/P1Doks", "--report", str(report)), 0)
+        self.assertEqual(json.loads(report.read_text())[0]["clean_source"], [])
+        self.assertTrue((self.car / "Garage 61").is_dir())
+
+    def test_source_cleanup_preserves_nested_targets_and_glob_matches(self):
+        nested = self.car / "Shared/Team [A]"
+        nested.mkdir(parents=True)
+        self.write("Shared/Team A/not-kept.txt", b"remove")  # target names are literal, not globs
+        self.write("Shared/Team [A]/personal.txt", b"keep")
+        self.write("Shared/keep-1.txt", b"keep")
+        self.write("Shared/notes.txt", b"remove")
+        self.write("Providers/archive/keep.sto", b"keep")
+        self.write("Providers/other/remove.txt", b"remove")
+        self.write("Providers/root.txt", b"remove")
+        self.assertEqual(self.run_sync("--clean-source", "--target-dir", "/Shared/Team [A]",
+                                       "--clean-source-exclude", "/Shared/keep-?.txt",
+                                       "--clean-source-exclude", "/Providers/**/keep.[s]to"), 0)
+        self.assertTrue((nested / "Le Mans/26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
+        self.assertTrue((nested / "personal.txt").exists())
+        self.assertTrue((self.car / "Shared/keep-1.txt").exists())
+        self.assertTrue((self.car / "Providers/archive/keep.sto").exists())
+        for removed in (ECLIPSE, RASEN, "Shared/Team A", "Shared/notes.txt", "Providers/other", "Providers/root.txt"):
+            self.assertFalse((self.car / removed).exists(), removed)
+
+    def test_source_globs_are_anchored_and_recursive_star_matches_zero_directories(self):
+        self.write("keep.txt", b"root")
+        self.write("misc/keep.txt", b"nested")
+        self.write("Providers/keep.sto", b"zero levels")
+        self.assertEqual(self.run_sync("--clean-source", "--clean-source-exclude", "/*.txt",
+                                       "--clean-source-exclude", "/Providers/**/keep.sto"), 0)
+        self.assertTrue((self.car / "keep.txt").exists())
+        self.assertFalse((self.car / "misc").exists())
+        self.assertTrue((self.car / "Providers/keep.sto").exists())
+
+    def test_source_cleanup_without_existing_targets_is_skipped(self):
+        self.assertEqual(self.run_sync("--clean-source", "--target-dir", "/Missing"), 0)
+        self.assertTrue((self.car / "P1Doks").exists())
+        self.assertEqual(self.discarded, [])
+
+    def test_copy_failure_prevents_both_cleanups(self):
+        old = self.write(f"{ECLIPSE}/Spa/25S1-Spa-Q.sto", b"old")
+        with patch.object(setup_sync.shutil, "copy2", side_effect=OSError("copy failed")):
+            with self.assertRaisesRegex(OSError, "copy failed"):
+                self.run_sync("--clean-source", "--clean-target")
+        self.assertTrue(old.exists())
+        self.assertTrue((self.car / "P1Doks").exists())
+        self.assertEqual(self.discarded, [])
+
+    def test_later_car_copy_failure_preserves_earlier_car_sources_and_old_targets(self):
+        old = self.write(f"{ECLIPSE}/Spa/25S1-Spa-Q.sto", b"old")
+        second = self.root / "second-car"
+        (second / ECLIPSE).mkdir(parents=True)
+        source = second / "26S3-Spa-Q.sto"
+        source.write_bytes(b"second car")
+        copy = setup_sync.shutil.copy2
+
+        def fail_second_car(path, target):
+            if path == source:
+                raise OSError("second car copy failed")
+            return copy(path, target)
+
+        with patch.object(setup_sync.shutil, "copy2", side_effect=fail_second_car):
+            with self.assertRaisesRegex(OSError, "second car copy failed"):
+                self.run_sync("--car", "second-car", "--clean-source", "--clean-target")
+        self.assertTrue((self.eclipse / "Le Mans/26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
+        self.assertTrue((self.car / "Garage 61").exists())
+        self.assertTrue((self.car / "P1Doks").exists())
+        self.assertTrue(old.exists())
+        self.assertTrue(source.exists())
+
+    def test_both_cleanups_apply_after_sync(self):
+        old = self.write(f"{ECLIPSE}/Imola/25S1-Imola-Q.sto", b"old")
+        self.assertEqual(self.run_sync("--clean-source", "--clean-target"), 0)
+        self.assertEqual({p.name for p in self.car.iterdir()}, {ECLIPSE, RASEN})
+        self.assertFalse(old.exists())
+        self.assertTrue((self.eclipse / "Le Mans/26S3-W12-GnG-LeMans-Ferrari-Q.sto").exists())
+        self.assertLess(self.discarded.index(f"{ECLIPSE}/Imola"), self.discarded.index("Garage 61"))
+
+    def test_failed_copy_verification_prevents_source_cleanup(self):
+        def corrupt_copy(source, target):
+            target.write_bytes(b"bad copy")
+
+        with patch.object(setup_sync.shutil, "copy2", side_effect=corrupt_copy):
+            with self.assertRaisesRegex(RuntimeError, "copy verification failed"):
+                self.run_sync("--clean-source")
+        self.assertTrue((self.car / "P1Doks").exists())
+        self.assertTrue((self.car / "Garage 61").exists())
+
+    def test_failed_recycle_does_not_fall_back_to_deletion(self):
+        self.assertEqual(self.run_sync(), 0)
+        before = sorted(p.relative_to(self.car) for p in self.car.rglob("*"))
+        with patch.object(setup_sync, "discard", side_effect=OSError("recycle failed")):
+            with self.assertRaisesRegex(OSError, "recycle failed"):
+                self.run_sync("--clean-source")
+        self.assertEqual(sorted(p.relative_to(self.car) for p in self.car.rglob("*")), before)
+
+    def test_cleanup_cannot_recycle_car_root_or_outside_paths(self):
+        outside = self.root / "outside.txt"
+        outside.write_bytes(b"keep")
+        for path in (outside, self.car):
+            with self.assertRaises(ConfigError):
+                setup_sync.discard_inside_car(path, self.car)
+        self.assertEqual(self.discarded, [])
+        self.assertTrue(outside.exists())
+
+    def test_cleanup_refuses_symlinks_before_copying_or_removing_anything(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_bytes(b"keep")
+        link = self.car / "linked"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.run_sync("--clean-source")
+        self.assertEqual(self.discarded, [])
+        self.assertFalse((self.eclipse / "Le Mans").exists())
+        self.assertEqual((outside / "keep.txt").read_bytes(), b"keep")
 
     def test_unresolved_blocks_apply(self):
         self.write("MG/26S3.NOWHERE.296.R.sto", b"x")
-        self.assertEqual(self.run_sync("--apply"), 2)
+        self.assertEqual(self.run_sync("--clean-source", "--clean-target"), 2)
         self.assertFalse((self.eclipse / "Le Mans").exists())
-        self.assertEqual(self.run_sync("--apply", "--allow-unresolved"), 0)
+        self.assertTrue((self.car / "MG/26S3.NOWHERE.296.R.sto").exists())
+        self.assertEqual(self.discarded, [])
+        self.assertEqual(self.run_sync("--allow-unresolved"), 0)
         self.assertTrue((self.eclipse / "Le Mans").exists())
 
 

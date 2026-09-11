@@ -38,23 +38,54 @@ defaults:
   target-dirs:
     - "/Garage 61 - Rasengrasen Racing"
     - "/Garage 61 - Eclipse Motorsport"
-  clean:
-    past-seasons: 2
-  exclude-dirs:
-    - "/Garage 61 - *"
+  clean-source:
+    enabled: true
+    exclude:
+      - "/Garage 61*"
+      - "/P1Doks"
+      - "/Track Titan"
+  clean-target:
+    enabled: true
+    past-season-count: 2
 ```
 
-`--target-dir` replaces the targets for one run, `--clean N` overrides the clean and
-`--no-clean` skips it.
+`--target-dir DIR` (repeatable) replaces the targets for one run. Only these target directories
+are excluded from source scanning; other team shares and cleanup exclusions remain sources.
+
+Cleanup modes run when enabled in the config or by their flags. `--dry-run` previews them
+without changing setup files:
+
+- `--clean-source` enables recycling everything in each car folder outside its targets, except
+  paths matching `clean-source.exclude`. This includes loose files, non-setup files and whole
+  provider folders, after all copies have been verified. `--clean-source-exclude GLOB` is
+  repeatable and replaces the configured exclusion list for that run.
+- `--clean-target` enables recycling old setups directly in target track folders.
+  `--clean-target-seasons N` overrides `clean-target.past-season-count` (default 2): at 26S3,
+  2 removes 26S1 and older; 1 removes 26S2 and older. The count alone does not enable cleanup.
+
+Set a mode's `enabled` setting to `false` to disable it unless its flag is passed. Exclusion globs are
+case-insensitive and relative to the car folder; a leading `/` is optional. `*`, `?` and `[]`
+match within a name, and `**` matches zero or more directories. A matching folder protects
+its whole subtree. Nested targets and matches keep their parent folders. Use `exclude: []`
+for no exclusions.
+
+The former `defaults.clean`, `defaults.exclude-dirs`, `--clean`, `--no-clean` and `--apply` are removed.
 
 ## Use
 
-Ask the agent to sync your iRacing setups (for one car first), or run the helper yourself. It is
-a dry run unless you pass `--apply`:
+Type `/setup-sync` to sync every car that has a configured target folder and apply the changes,
+including enabled cleanup. The agent looks up the current season and completes the run without
+asking for scope or apply confirmation. Use `/setup-sync --dry-run` for a preview, or
+`/setup-sync --car ferrari296gt3` to limit the run to one car.
+
+The helper also applies to all eligible cars by default. `--car` selects particular cars
+(repeatable), `--all` explicitly selects the default scope, and `--dry-run` previews changes:
 
 ```powershell
+python scripts/setup_sync.py --season 26S3 --season-start 2026-06-16
+python scripts/setup_sync.py --season 26S3 --season-start 2026-06-16 --dry-run
 python scripts/setup_sync.py --season 26S3 --season-start 2026-06-16 --car ferrari296gt3
-python scripts/setup_sync.py --season 26S3 --season-start 2026-06-16 --all --apply
+python scripts/setup_sync.py --season 26S3 --season-start 2026-06-16 --dry-run --clean-source --clean-target --clean-target-seasons 2
 ```
 
 [SKILL.md](SKILL.md) documents the whole workflow, the season and track rules, and how cleaning

@@ -7,13 +7,19 @@ defaults:
     - "/Garage 61 - Rasengrasen Racing"
     - "/Garage 61 - Eclipse Motorsport"
 
-  # Remove setups labelled this many seasons or more before the current one from the target
-  # track folders (2 at 26S3 removes 26S1 and older). --clean N overrides it for one run and
-  # --no-clean skips it. Use null to clean only when asked.
-  clean:
-    past-seasons: 2
+  # After copying, recycle everything outside the target dirs except these car-relative globs.
+  # Excluded files/folders are still read as sources. --clean-source enables this for one run;
+  # repeat --clean-source-exclude GLOB to replace this list for that run.
+  clean-source:
+    enabled: true
+    exclude:
+      - "/Garage 61*"
+      - "/P1Doks"
+      - "/Track Titan"
 
-  # Folders never read as sources (glob patterns): other Garage 61 team shares. The target
-  # dirs are always excluded as well.
-  exclude-dirs:
-    - "/Garage 61 - *"
+  # Recycle target track-folder setups labelled this many seasons or more before the current
+  # one (2 at 26S3 removes 26S1 and older). --clean-target enables this for one run;
+  # --clean-target-seasons N overrides the count without enabling cleanup on its own.
+  clean-target:
+    enabled: true
+    past-season-count: 2

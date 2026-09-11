@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """setup-sync: copy current-season iRacing setups into team folders, one flat folder per track.
 
-Dry run by default; --apply writes. It is a sync: each setup lands directly in its track folder,
+Applies to all cars by default; --car selects cars and --dry-run previews without writing setups.
+It is a sync: each setup lands directly in its track folder,
 overwriting a same-named file there. Folders already inside the target folders are left alone.
-Target folders and the default clean come from setup-sync.yaml; flags override them for one run.
-Replaced and removed files go to the Recycle Bin; the provider folders remain the source.
+Target folders and optional source/target cleanup come from setup-sync.yaml; flags override them
+for one run. Replaced and removed files and folders go to the Recycle Bin.
 Workflow and rules: ../SKILL.md.
 """
 from __future__ import annotations
@@ -12,7 +13,6 @@ from __future__ import annotations
 import argparse
 import ctypes
 import fnmatch
-import glob
 import hashlib
 import json
 import os
@@ -21,6 +21,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -61,7 +62,7 @@ class _FileOperation(ctypes.Structure):
 
 
 def recycle(path: Path) -> None:
-    """Move a file to the Windows Recycle Bin, so nothing a sync replaces or removes is destroyed."""
+    """Move a file or directory to the Windows Recycle Bin."""
     name = str(path.resolve())
     names = ctypes.create_unicode_buffer(name, len(name) + 2)    # the API takes a double-NUL list
     operation = _FileOperation(None, FO_DELETE, ctypes.addressof(names), None, RECYCLE_FLAGS, 0, None, None)
@@ -70,7 +71,21 @@ def recycle(path: Path) -> None:
         raise OSError(f"could not move {path} to the Recycle Bin (SHFileOperationW status {status:#x})")
 
 
-discard = recycle   # the only way this tool removes a file; tests substitute Path.unlink
+discard = recycle   # the only way this tool removes files or directories; tests substitute a fake bin
+
+
+def validate_cleanup_path(path: Path, car_dir: Path) -> None:
+    """Reject car-root removal, escapes and links/junctions before traversal or recycling."""
+    root = car_dir.resolve()
+    resolved = path.resolve()
+    if (resolved == root or not resolved.is_relative_to(root)
+            or resolved != root / path.relative_to(car_dir)):
+        raise ConfigError(f"cleanup path must stay inside {car_dir} without links or junctions: {path}")
+
+
+def discard_inside_car(path: Path, car_dir: Path) -> None:
+    validate_cleanup_path(path, car_dir)
+    discard(path)
 
 
 @dataclass
@@ -137,25 +152,64 @@ class TeamIndex:
         return self.folders.setdefault(base, base)
 
 
-def iter_setups(car_dir: Path, extensions: tuple[str, ...], skip: list[str]):
-    """Every setup under a car folder, except inside target and excluded folders (car-relative globs)."""
+def iter_setups(car_dir: Path, extensions: tuple[str, ...], targets: list[str]):
+    """Every setup under a car folder, except inside the exact target directories."""
+    skip = {target.lower() for target in targets}
     for current, dirs, files in os.walk(car_dir):
         base = Path(current).relative_to(car_dir)
-        dirs[:] = sorted(d for d in dirs
-                         if not any(fnmatch.fnmatchcase((base / d).as_posix().lower(), pattern.lower())
-                                    for pattern in skip))
+        dirs[:] = sorted(d for d in dirs if (base / d).as_posix().lower() not in skip)
         for name in sorted(files):
             if Path(name).suffix.lower() in extensions:
                 yield Path(current) / name
 
 
+def matches_glob(relative: str, pattern: str) -> bool:
+    """Case-insensitive, car-relative glob: * / ? / [] within a name, ** across directories."""
+    parts, patterns = relative.lower().split("/"), pattern.lower().split("/")
+
+    @lru_cache(maxsize=None)
+    def match(part: int, item: int) -> bool:
+        if item == len(patterns):
+            return part == len(parts)
+        if patterns[item] == "**":
+            return match(part, item + 1) or (part < len(parts) and match(part + 1, item))
+        return (part < len(parts) and fnmatch.fnmatchcase(parts[part], patterns[item])
+                and match(part + 1, item + 1))
+
+    return match(0, 0)
+
+
+def source_cleanup_paths(car_dir: Path, targets: list[str], excludes: list[str]) -> list[Path]:
+    """Plan whole subtrees where possible, preserving targets, glob matches and their ancestors."""
+    protected = {target.lower() for target in targets}
+
+    def visit(path: Path) -> tuple[list[Path], bool]:
+        relative = path.relative_to(car_dir).as_posix()
+        if relative.lower() in protected or any(matches_glob(relative, pattern) for pattern in excludes):
+            return [], True
+        validate_cleanup_path(path, car_dir)
+        removals: list[Path] = []
+        keep = False
+        if path.is_dir():
+            for child in sorted(path.iterdir()):
+                child_removals, child_kept = visit(child)
+                removals.extend(child_removals)
+                keep |= child_kept
+        return (removals, True) if keep else ([path], False)
+
+    return [path for child in sorted(car_dir.iterdir()) for path in visit(child)[0]]
+
+
 def plan_car(car_dir: Path, targets: list[str], table: TrackTable, args) -> dict:
     current, season_start = args.season, args.season_start
     max_year = current.year + 1
+    missing = [target for target in targets if not (car_dir / target).is_dir()]
+    clean_source = (source_cleanup_paths(car_dir, targets, args.clean_source_exclude)
+                    if args.clean_source and len(missing) < len(targets) else [])
     included: list[Source] = []
     excluded: list[tuple[str, str]] = []
     unresolved: list[Source] = []
-    for path in iter_setups(car_dir, args.extensions, args.skip):
+    for path in iter_setups(car_dir, args.extensions, targets):
         relative = path.relative_to(car_dir).as_posix()
         folders, stem = list(Path(relative).parts[:-1]), path.stem
         rule = table.rule_for(relative)
@@ -183,9 +237,8 @@ def plan_car(car_dir: Path, targets: list[str], table: TrackTable, args) -> dict
     notes: set[str] = set()
     actions: list[Action] = []
     team_plans: list[dict] = []
-    missing = [target for target in targets if not (car_dir / target).is_dir()]
     in_season_names = {s.name.lower() for s in included + unresolved}
-    cutoff = current.shifted(-args.clean) if args.clean else None
+    cutoff = current.shifted(-args.clean_target_seasons) if args.clean_target else None
     for target in targets:
         if target in missing:
             continue
@@ -223,7 +276,8 @@ def plan_car(car_dir: Path, targets: list[str], table: TrackTable, args) -> dict
         team_plans.append({"team": target, "root": root, "untouched": index.untouched, "clean": clean})
     return {"car": car_dir.name, "dir": car_dir, "total": len(included) + len(excluded) + len(unresolved),
             "included": included, "excluded": excluded, "unresolved": unresolved, "actions": actions,
-            "teams": team_plans, "notes": sorted(notes), "missing_teams": missing, "cutoff": cutoff}
+            "teams": team_plans, "notes": sorted(notes), "missing_teams": missing, "cutoff": cutoff,
+            "clean_source": clean_source}
 
 
 def print_plan(plan: dict, verbose: bool) -> None:
@@ -242,7 +296,7 @@ def print_plan(plan: dict, verbose: bool) -> None:
         kinds = Counter(a.kind for a in actions)
         parts = [f"{kinds[k]} {k}" for k in KINDS if kinds[k]]
         if team["clean"]:
-            parts.append(f"{len(team['clean'])} to clean")
+            parts.append(f"{len(team['clean'])} to clean from target")
         print(f"   {team['team']}: " + (", ".join(parts) or "nothing to do"))
         folders: dict[str, Counter] = defaultdict(Counter)
         new_folders = {a.folder for a in actions if a.new_folder}
@@ -266,6 +320,10 @@ def print_plan(plan: dict, verbose: bool) -> None:
                     print(f"        clean ({season}) {path.relative_to(root).as_posix()}")
         if verbose and team["untouched"]:
             print("     not track folders (left alone): " + ", ".join(team["untouched"]))
+    if plan["clean_source"]:
+        print(f"   clean source: {len(plan['clean_source'])} files/folders to the Recycle Bin after copying")
+        for path in plan["clean_source"]:
+            print(f"     recycle {path.relative_to(plan['dir']).as_posix()}")
     for line in plan["notes"]:
         print(f"   ! same name from two sources: {line}")
     for source in unresolved:
@@ -283,7 +341,7 @@ def print_plan(plan: dict, verbose: bool) -> None:
 
 
 def apply_plans(plans: list[dict]) -> Counter:
-    """Copy, then clean. Every removal goes through `discard` (the Recycle Bin)."""
+    """Verify all copies before cleaning targets, then sources. Every removal uses the Recycle Bin."""
     done: Counter = Counter()
     for plan in plans:
         for action in plan["actions"]:
@@ -293,19 +351,24 @@ def apply_plans(plans: list[dict]) -> Counter:
                 action.target.parent.mkdir()
                 done["folders"] += 1
             if action.kind == "overwrite":
-                discard(action.target)
+                discard_inside_car(action.target, plan["dir"])
             shutil.copy2(action.source.path, action.target)
             if sha256(action.target, fresh=True) != sha256(action.source.path):
                 raise RuntimeError(f"copy verification failed: {action.target}")
             done[action.kind] += 1
+    for plan in plans:
         for team in plan["teams"]:
             for path, _ in team["clean"]:
-                discard(path)
-                done["cleaned"] += 1
+                discard_inside_car(path, plan["dir"])
+                done["cleaned_target"] += 1
             for folder in {path.parent for path, _ in team["clean"]}:
                 if not any(folder.iterdir()):
-                    folder.rmdir()          # a track folder the clean left empty
+                    discard_inside_car(folder, plan["dir"])
                     done["emptied"] += 1
+    for plan in plans:
+        for path in plan["clean_source"]:
+            discard_inside_car(path, plan["dir"])
+            done["cleaned_source"] += 1
     return done
 
 
@@ -314,6 +377,7 @@ def report_json(plan: dict) -> dict:
         return {"relative": s.relative, "track": s.variant or s.family, "how": s.how, "season": s.season,
                 "inferred": s.inferred, "note": s.note}
     return {"car": plan["car"], "missing_targets": plan["missing_teams"], "notes": plan["notes"],
+            "clean_source": [str(p) for p in plan["clean_source"]],
             "excluded": [{"relative": r, "reason": why} for r, why in plan["excluded"]],
             "unresolved": [source(s) for s in plan["unresolved"]],
             "targets": [{"target": t["team"], "untouched": t["untouched"],
@@ -330,30 +394,39 @@ def season_count(text: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument("--season", required=True, type=parse_season, help="current season, e.g. 26S3")
     parser.add_argument("--season-start", type=date.fromisoformat,
                         help="first day of the current season (YYYY-MM-DD); dates year-only folders")
-    cars = parser.add_mutually_exclusive_group(required=True)
+    cars = parser.add_mutually_exclusive_group()
     cars.add_argument("--car", action="append", help="car folder name; repeatable")
-    cars.add_argument("--all", action="store_true", help="every car folder that has a target folder")
+    cars.add_argument("--all", action="store_true", help="every car folder that has a target folder (default)")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help=f"defaults file (default: {DEFAULT_CONFIG.name} beside SKILL.md)")
     parser.add_argument("--target-dir", action="append", metavar="DIR",
                         help="folder relative to each car folder to copy into; repeatable; "
                              "replaces defaults.target-dirs for this run")
-    clean = parser.add_mutually_exclusive_group()
-    clean.add_argument("--clean", type=season_count, metavar="N",
-                       help="remove track-folder setups labelled N or more seasons before --season "
-                            "(2 at 26S3 removes 26S1 and older); default: defaults.clean.past-seasons")
-    clean.add_argument("--no-clean", action="store_true", help="skip the configured clean for this run")
+    parser.add_argument("--clean-source", action="store_true",
+                        help="enable recycling everything outside target dirs except clean-source.exclude matches")
+    parser.add_argument("--clean-source-exclude", action="append", metavar="GLOB",
+                        help="car-relative glob to preserve during source cleanup; repeatable; "
+                             "replaces defaults.clean-source.exclude for this run")
+    parser.add_argument("--clean-target", action="store_true",
+                        help="enable recycling old setups directly inside target track folders")
+    parser.add_argument("--clean-target-seasons", type=season_count, metavar="N",
+                        help="clean target setups labelled N or more seasons before --season "
+                             "(2 at 26S3 removes 26S1 and older); overrides "
+                             "defaults.clean-target.past-season-count (default 2); does not enable cleanup")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="the iRacing setups folder")
     parser.add_argument("--ext", action="append", help="setup extension; default .sto")
-    parser.add_argument("--apply", action="store_true", help="write the changes (default is a dry run)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="preview copies, overwrites and cleanup without changing setups (default: apply)")
     parser.add_argument("--allow-unresolved", action="store_true", help="apply even if some files are unresolved")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--report", type=Path, help="write the full plan as JSON")
     args = parser.parse_args(argv)
+    all_cars = args.car is None
+    _DIGESTS.clear()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")    # provider names are not always encodable
 
@@ -361,51 +434,61 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         targets = ([relative_dir(t, "--target-dir") for t in args.target_dir] if args.target_dir
                    else list(config.target_dirs))
+        args.clean_source_exclude = ([relative_dir(p, "--clean-source-exclude") for p in args.clean_source_exclude]
+                                     if args.clean_source_exclude is not None else list(config.clean_source_exclude))
     except ConfigError as error:
         parser.error(str(error))
     if not targets:
         parser.error(f"no target folders: set defaults.target-dirs in {args.config} or pass --target-dir")
-    clean_from = "flag" if args.clean else "config"
-    if args.no_clean:
-        args.clean = None
-    elif args.clean is None:
-        args.clean = config.clean_past_seasons
-    args.skip = [glob.escape(target) for target in targets] + list(config.exclude_dirs)
+    source_from = "flag" if args.clean_source else "config"
+    target_from = "flag" if args.clean_target else "config"
+    seasons_from = "flag" if args.clean_target_seasons is not None else "config"
+    args.clean_source = args.clean_source or config.clean_source_enabled
+    args.clean_target = args.clean_target or config.clean_target_enabled
+    if args.clean_target_seasons is None:
+        args.clean_target_seasons = config.clean_target_past_season_count
     args.extensions = tuple(e.lower() if e.startswith(".") else f".{e.lower()}"
                             for e in (args.ext or SETUP_EXTENSIONS))
     table = TrackTable.load(TRACKS_FILE)
-    if args.all:
+    if all_cars:
         car_dirs = [d for d in sorted(args.root.iterdir()) if d.is_dir() and any((d / t).is_dir() for t in targets)]
     else:
         car_dirs = [args.root / name for name in args.car]
         for car in car_dirs:
             if not car.is_dir():
                 parser.error(f"no car folder {car}")
-    clean_note = f" | clean <= {args.season.shifted(-args.clean)} ({clean_from})" if args.clean else " | no clean"
+    clean_note = (f" | clean source ({source_from})" if args.clean_source else " | no source cleanup")
+    clean_note += (f" | clean target <= {args.season.shifted(-args.clean_target_seasons)} "
+                   f"({target_from}; season count from {seasons_from})" if args.clean_target else " | no target cleanup")
     print(f"setup-sync {args.season} or newer{clean_note} | root {args.root} | targets {', '.join(targets)}"
-          f" | {'APPLY' if args.apply else 'dry run'}")
-    plans = [plan_car(car, targets, table, args) for car in car_dirs]
+          f" | {'dry run' if args.dry_run else 'APPLY'}")
+    try:
+        plans = [plan_car(car, targets, table, args) for car in car_dirs]
+    except ConfigError as error:
+        parser.error(str(error))
     for plan in plans:
-        busy = any(t["clean"] for t in plan["teams"])
-        if plan["included"] or plan["unresolved"] or busy or args.verbose or not args.all:
+        busy = plan["clean_source"] or any(t["clean"] for t in plan["teams"])
+        if plan["included"] or plan["unresolved"] or busy or args.verbose or not all_cars:
             print_plan(plan, args.verbose)
     totals = Counter(a.kind for p in plans for a in p["actions"])
     cleaned = sum(len(t["clean"]) for p in plans for t in p["teams"])
+    cleaned_source = sum(len(p["clean_source"]) for p in plans)
     blocked = sum(len(p["unresolved"]) for p in plans)
     print(f"\nTotal: {totals['copy']} to copy, {totals['overwrite']} to overwrite, {totals['present']} already "
-          f"identical, {cleaned} to clean, {blocked} unresolved across {len(plans)} car(s).")
+          f"identical, {cleaned} target setups to clean, {cleaned_source} source files/folders to clean, "
+          f"{blocked} unresolved across {len(plans)} car(s).")
     if args.report:
         args.report.write_text(json.dumps([report_json(p) for p in plans], indent=2), encoding="utf-8")
         print(f"Report: {args.report}")
-    if not args.apply:
+    if args.dry_run:
         return 0
     if blocked and not args.allow_unresolved:
         print("Refusing to apply: resolve the unresolved files (SKILL.md, 'Inference') or pass --allow-unresolved.")
         return 2
     done = apply_plans(plans)
     print(f"Applied: {done['copy']} copied, {done['overwrite']} overwritten, {done['folders']} folders created; "
-          f"to the Recycle Bin: {done['overwrite']} replaced, {done['cleaned']} cleaned; "
-          f"{done['emptied']} emptied track folders removed.")
+          f"to the Recycle Bin: {done['overwrite']} replaced, {done['cleaned_target']} target setups cleaned, "
+          f"{done['cleaned_source']} source files/folders cleaned, {done['emptied']} emptied track folders.")
     return 0
 
 

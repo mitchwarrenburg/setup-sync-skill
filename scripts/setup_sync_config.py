@@ -10,8 +10,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_EXCLUDE_DIRS = ("Garage 61 - *",)       # other Garage 61 team shares are never sources
-KNOWN_DEFAULTS = {"target-dirs", "clean", "exclude-dirs"}
+DEFAULT_CLEAN_TARGET_SEASONS = 2
+KNOWN_DEFAULTS = {"target-dirs", "clean-source", "clean-target"}
 
 
 class ConfigError(ValueError):
@@ -21,8 +21,10 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class Config:
     target_dirs: tuple[str, ...]        # relative to each car folder, '/'-separated
-    clean_past_seasons: int | None      # default for --clean; None: no cleaning unless asked
-    exclude_dirs: tuple[str, ...]       # glob patterns relative to each car folder
+    clean_source_enabled: bool
+    clean_source_exclude: tuple[str, ...]  # cleanup protection only; these remain source candidates
+    clean_target_enabled: bool
+    clean_target_past_season_count: int
 
 
 def load_config(path: Path) -> Config:
@@ -33,26 +35,36 @@ def load_config(path: Path) -> Config:
     unknown = set(data) - {"defaults"}
     if unknown:
         raise ConfigError(f"{path}: unknown top-level keys {sorted(unknown)}; everything lives under 'defaults'")
-    defaults = data.get("defaults") or {}
-    if not isinstance(defaults, dict):
-        raise ConfigError(f"{path}: 'defaults' must be a mapping")
-    unknown = set(defaults) - KNOWN_DEFAULTS
-    if unknown:
-        raise ConfigError(f"{path}: unknown keys under defaults: {sorted(unknown)}")
+    defaults = _mapping(data.get("defaults"), "defaults", KNOWN_DEFAULTS)
     targets = tuple(relative_dir(v, "defaults.target-dirs") for v in _list(defaults.get("target-dirs"),
                                                                               "defaults.target-dirs"))
-    clean = defaults.get("clean")
-    if clean is not None and not isinstance(clean, dict):
-        raise ConfigError(f"{path}: 'defaults.clean' must be a mapping with 'past-seasons'")
-    clean = clean or {}
-    if set(clean) - {"past-seasons"}:
-        raise ConfigError(f"{path}: unknown keys under defaults.clean: {sorted(set(clean) - {'past-seasons'})}")
-    past = clean.get("past-seasons")
-    if past is not None and (isinstance(past, bool) or not isinstance(past, int) or past < 1):
-        raise ConfigError(f"{path}: defaults.clean.past-seasons must be a whole number of 1 or more, or null")
-    excludes = defaults.get("exclude-dirs", list(DEFAULT_EXCLUDE_DIRS))
-    excludes = tuple(relative_dir(v, "defaults.exclude-dirs") for v in _list(excludes, "defaults.exclude-dirs"))
-    return Config(targets, past, excludes)
+    source = _mapping(defaults.get("clean-source"), "defaults.clean-source", {"enabled", "exclude"})
+    target = _mapping(defaults.get("clean-target"), "defaults.clean-target", {"enabled", "past-season-count"})
+    source_enabled = _enabled(source.get("enabled", False), "defaults.clean-source.enabled")
+    target_enabled = _enabled(target.get("enabled", False), "defaults.clean-target.enabled")
+    past = target.get("past-season-count", DEFAULT_CLEAN_TARGET_SEASONS)
+    if isinstance(past, bool) or not isinstance(past, int) or past < 1:
+        raise ConfigError(f"{path}: defaults.clean-target.past-season-count must be a whole number of 1 or more")
+    excludes = tuple(relative_dir(v, "defaults.clean-source.exclude")
+                     for v in _list(source.get("exclude"), "defaults.clean-source.exclude"))
+    return Config(targets, source_enabled, excludes, target_enabled, past)
+
+
+def _mapping(value: object, where: str, keys: set[str]) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{where}: expected a mapping")
+    unknown = set(value) - keys
+    if unknown:
+        raise ConfigError(f"unknown keys under {where}: {sorted(unknown)}")
+    return value
+
+
+def _enabled(value: object, where: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{where}: expected true or false")
+    return value
 
 
 def relative_dir(value: object, where: str = "target dir") -> str:
@@ -137,6 +149,8 @@ def _block(lines: list[tuple[int, int, str]], start: int, indent: int) -> tuple[
 def _scalar(text: str, number: int) -> object:
     if not text:
         return None
+    if text == "[]":
+        return []
     if text[0] in "\"'":
         quote = text[0]
         if len(text) < 2 or text[-1] != quote:

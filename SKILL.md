@@ -1,6 +1,6 @@
 ---
 name: setup-sync
-description: Sync current-season iRacing car setups from every provider folder (Garage 61 data packs/GnG, P1Doks, Track Titan/HYMO, Coach Dave Academy, VRS, GO, ARA, MG and iRacing track folders) into configured target folders inside each car folder (by default the Garage 61 team folders), directly into one folder per track. Finds the current iRacing season by web search, keeps that season or newer, infers track and layout from folder and file names, records new inferences so the next run is automatic, and removes team setups a configured number of seasons old. Use when asked to sync, centralize, share, copy or clean iRacing setups in the team folders, for one car or all of them.
+description: Sync current-season iRacing car setups from every provider folder (Garage 61 data packs/GnG, P1Doks, Track Titan/HYMO, Coach Dave Academy, VRS, GO, ARA, MG and iRacing track folders) into configured target folders inside each car folder (by default the Garage 61 team folders), directly into one folder per track. A bare /setup-sync applies changes and configured cleanup to all eligible cars; --dry-run previews and --car selects cars. Finds the current iRacing season by web search, keeps that season or newer, infers track and layout from folder and file names, and records new inferences so the next run is automatic. Use when asked to sync, centralize, share, copy or clean iRacing setups in the team folders.
 ---
 
 # Sync iRacing setups into the team folders
@@ -19,6 +19,18 @@ setups\ferrari296gt3\P1Doks\suzuka\2026-S3\P1Doks_296GT3_Suzuka_GTS_Q_26S3W12.st
 from names alone, and says how it decided. You handle what it cannot: the season lookup and any
 file it reports as unresolved.
 
+## Invocation defaults
+
+A bare `/setup-sync` means **apply the sync and configured cleanup for all cars that have a
+target folder**. Look up the season, inspect the plan, resolve what you can, then finish applying
+the changes. This invocation authorizes the run: do not ask for a car selection or an apply
+confirmation, and do not stop after the internal preview.
+
+Honor options supplied after the skill name. `--car NAME` (repeatable) limits the scope; `--all`
+explicitly selects the default scope. If the user passes `--dry-run` or asks only for a preview,
+keep `--dry-run` on every helper invocation and stop after reporting the plan. The helper applies
+changes by default; `--apply` has been removed. Honor the configured cleanup switches and exclusions.
+
 ## Configuration
 
 [setup-sync.yaml](setup-sync.yaml) holds the defaults. Every folder in it is relative to each car
@@ -29,20 +41,31 @@ defaults:
   target-dirs:
     - "/Garage 61 - Rasengrasen Racing"
     - "/Garage 61 - Eclipse Motorsport"
-  clean:
-    past-seasons: 2
-  exclude-dirs:
-    - "/Garage 61 - *"
+  clean-source:
+    enabled: true
+    exclude:
+      - "/Garage 61*"
+      - "/P1Doks"
+      - "/Track Titan"
+  clean-target:
+    enabled: true
+    past-season-count: 2
 ```
 
-- `target-dirs`: where setups are copied. `--target-dir DIR` (repeatable) replaces the list for one run.
-- `clean.past-seasons`: the default for `--clean` (see Cleaning). It applies to every run unless
-  `--clean N` overrides it or `--no-clean` skips it. `null` means clean only when asked.
-- `exclude-dirs`: folders never read as sources (glob patterns), such as other team shares. The
-  target folders are always excluded too.
+- `target-dirs`: where setups are copied. `--target-dir DIR` (repeatable) replaces the list for
+  one run. These exact directories are the only folders excluded from source scanning.
+- `clean-source.enabled`: controls source cleanup; `--clean-source` enables it for one run.
+  If the setting is omitted, it is `false`.
+- `clean-source.exclude`: car-relative glob patterns protected from source cleanup. Matching
+  folders and files are still source candidates. `--clean-source-exclude GLOB` (repeatable)
+  replaces the list for one run. An omitted list, `null` or `[]` means no exclusions.
+- `clean-target.enabled`: controls target cleanup; `--clean-target` enables it for one run.
+  If the setting is omitted, it is `false`.
+- `clean-target.past-season-count`: a positive integer, default 2. `--clean-target-seasons N`
+  overrides the count for one run; setting the count does not enable cleanup.
 
 `--config PATH` reads another file. The YAML is a strict subset (mappings, lists of plain values,
-strings, integers, null), and anything else is an error rather than a guess.
+strings, integers, booleans, null and empty lists), and anything else is an error rather than a guess.
 
 ## 1. Find the current season
 
@@ -55,17 +78,19 @@ start on a Tuesday at 00:00 UTC. On 2026-09-11 this gave **26S3, week 13**: 26S3
 The rule is **current season or newer**. Providers label late-season uploads for the next season,
 so during week 13 (and at any other time) a `26S4` folder next to the `26S3` ones is included.
 
-## 2. Dry run
+## 2. Inspect the plan
 
-Name one car first:
+Preview all eligible cars internally before applying, using the season and start date just
+looked up (the values below are an example):
 
 ```powershell
-python "<SKILL_DIR>/scripts/setup_sync.py" --season 26S3 --season-start 2026-06-16 --car ferrari296gt3
+python "<SKILL_DIR>/scripts/setup_sync.py" --season 26S3 --season-start 2026-06-16 --dry-run
 ```
 
-Use `--all` for every car folder that has a target folder. Add `--verbose` for per-file lines, or
-`--report <file.json>` for the whole plan. The dry run writes nothing. The header line shows the
-targets and whether a clean applies, and from where.
+Add `--car NAME` only when the user selected particular cars. Carry the same config, scope and
+cleanup options into the apply command. Add `--verbose` for per-file lines, or `--report <file.json>`
+to save the whole plan. A dry run changes no setup files; `--report` writes the requested report.
+The header line shows the targets and whether each cleanup mode applies, and from where.
 
 For each target, the plan lists:
 
@@ -73,18 +98,23 @@ For each target, the plan lists:
 - `overwrite`: the track folder already holds that file name with different bytes.
 - `present`: the identical file is already there.
 - `(new)`: a track folder the run will create.
-- `clean`: old setups to remove.
+- `clean`: old setups to recycle from targets.
 
-## 3. Review, then infer what the helper could not
+When source cleanup is enabled, the plan also lists each file or whole folder it will recycle.
+The JSON report includes these paths under `clean_source`.
 
-Read the plan before applying:
+## 3. Resolve what the helper could not
+
+Review the plan and make routine inference decisions autonomously:
 
 - **`? unresolved`**: no folder or file name matched a known track, or a Nürburgring file has no
   layout. Apply refuses while any remain (see Inference).
 - **`(new)` folders**: check the name is the track you would have picked.
 - **`! same name from two sources`**: two providers ship one file name, with different content,
-  into one track folder. The newest is used; confirm that is right.
-- **`clean`**: check nothing current is about to go. The configured default cleans on every run.
+  into one track folder. The newest is used; check that decision against the source files.
+- **Target cleanup**: check nothing current is about to go. It runs only when enabled.
+- **Source cleanup**: review the listed files and folders against the target directories and
+  preservation globs. It recycles everything else, including unlabelled files and non-setup files.
 - **`--verbose` `~` lines**: files placed by file-name tokens or dated by file time rather than
   a label. Spot-check them.
 
@@ -114,12 +144,15 @@ Record the decision in [tracks.json](tracks.json) so the next run needs no judge
 
 Unknown stays unknown. If the evidence does not settle it, report the file and leave it out
 with `--allow-unresolved` rather than guessing. Run the tests after editing `tracks.json`, then
-repeat the dry run.
+repeat the dry run. If the user requested a preview, report it and stop. Otherwise continue to
+apply without asking for another confirmation.
 
 ## 4. Apply
 
+Remove `--dry-run` and retain the same scope, config and cleanup options:
+
 ```powershell
-python "<SKILL_DIR>/scripts/setup_sync.py" --season 26S3 --season-start 2026-06-16 --car ferrari296gt3 --apply
+python "<SKILL_DIR>/scripts/setup_sync.py" --season 26S3 --season-start 2026-06-16
 ```
 
 It is a sync, and the files it copies are flat:
@@ -132,24 +165,45 @@ It is a sync, and the files it copies are flat:
 - Only missing track folders are created, never a folder inside one.
 - Every copy is verified by hash, and copies keep the provider's original file date, which is the
   date iRacing's setup dialog shows.
-- Anything the run replaces or removes goes to the Windows Recycle Bin, never a hard delete.
+- Anything the run replaces or removes, including emptied track folders, goes to the Windows
+  Recycle Bin. A recycle failure stops the run without falling back to a hard delete.
 
-The provider folders stay the source: correct a bad run by fixing `tracks.json` and running
-again. Report the copied, overwritten and cleaned counts, plus anything left unresolved.
+When source cleanup is disabled, the provider folders stay available for another run. When it
+is enabled, restore any needed source folders from the Recycle Bin before rerunning. Report
+the copied, overwritten and source/target cleanup counts, plus anything left unresolved.
 
-### Cleaning old seasons
+### Cleaning source files and folders
 
-The clean (`--clean N`, or `clean.past-seasons` from the config) removes setups labelled N or
-more seasons before `--season` from the files directly in the target track folders. N = 2 at 26S3
-removes 26S1 and older; N = 1 keeps only the current season and newer. Two guards keep it from
-fighting the sync:
+`--clean-source` or `defaults.clean-source.enabled: true` recycles everything under each
+selected car root except its active target directories and paths matching
+`defaults.clean-source.exclude`. Cleanup runs after all cars' copies have been verified and
+target cleanup has finished. A copy or verification failure prevents cleanup. Cars without an
+existing target directory are skipped.
+
+Patterns are case-insensitive and relative to the car root; a leading `/` is optional. `*`, `?`
+and `[]` match within a name; `**` matches zero or more directories. `/Garage 61*` protects all
+matching folders at the car root, including their contents. `/Providers/**/keep.sto` protects
+matching files at any depth under `Providers`. Nested targets and excluded files/folders keep
+their ancestors, while unprotected siblings are recycled. Cleanup refuses paths that escape
+the car root or traverse links/junctions.
+
+All other content is recycled, even files that were too old or unlabelled to copy. With
+`--allow-unresolved`, this also includes unresolved files outside protected paths.
+
+### Cleaning old target seasons
+
+`--clean-target` or `defaults.clean-target.enabled: true` enables target cleanup. The
+`--clean-target-seasons N` flag or `defaults.clean-target.past-season-count` removes setups
+labelled N or more seasons before `--season` from the files directly in the target track
+folders. N = 2 at 26S3 removes 26S1 and older; N = 1 keeps only the current season and newer.
+Two guards keep it from fighting the sync:
 
 - A file whose name matches any current-season source is kept, whatever its label says. P1Doks
   offers `..._25S3W8.sto` as its current Le Mans setup.
 - A file without a season in its name (a teammate's `Teammate_..._V3.sto`) is kept.
 
-A track folder the clean leaves empty is removed. Only setups (`.sto`) are cleaned, and nothing in
-the left-alone folders above is touched.
+A track folder the clean leaves empty is recycled. Only setups (`.sto`, or extensions selected
+with `--ext`) are cleaned, and nothing in the left-alone target folders above is touched.
 
 ## How names are read
 
@@ -175,8 +229,9 @@ the left-alone folders above is touched.
   canonical spelling wins, then the fullest. New folders use the canonical key from
   `tracks.json`. Only whole-name matches are reused, so `Spa 12H` is not taken for `Spa`, and
   such folders are never written to.
-- **Out of scope.** Target and `exclude-dirs` folders are never sources. Only `.sto` files are
-  copied (`--ext` adds others). Car folders without any target folder are skipped.
+- **Source scope.** Only the active target directories are excluded as source folders. Other
+  team shares and source-cleanup exclusions are read normally. Only `.sto` files are copied
+  (`--ext` selects other extensions). Car folders without any target folder are skipped.
 
 ## Tests
 

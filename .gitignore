@@ -1,2 +1,21 @@
+# IDE settings
+.idea/
+
+# Python bytecode and virtual environments
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+venv/
+
+# Local test, type-checker and linter output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
