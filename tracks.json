@@ -41,7 +41,7 @@
     "Knockhill": {"aliases": ["knockhill"]},
     "Laguna Seca": {"aliases": ["laguna seca", "lagunaseca"]},
     "Las Vegas": {"aliases": ["las vegas", "vegas"], "exact": ["vegas oval"]},
-    "Le Mans": {"aliases": ["le mans", "lemans", "24 heures du mans", "sarthe"], "exact": ["lemans full"]},
+    "Le Mans": {"aliases": ["le mans", "lemans", "lmans", "24 heures du mans", "sarthe"], "exact": ["lemans full"]},
     "Ledenon": {"aliases": ["ledenon"]},
     "Lime Rock": {"aliases": ["lime rock", "limerock"]},
     "Long Beach": {"aliases": ["long beach", "longbeach"]},
