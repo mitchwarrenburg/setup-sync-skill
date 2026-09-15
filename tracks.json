@@ -109,19 +109,19 @@
     "Okayama": {"aliases": ["okayama"], "exact": ["okayama full"]},
     "Oran Park": {"aliases": ["oran park", "oranpark"]},
     "Oschersleben": {"aliases": ["oschersleben"], "exact": ["oschersleben gp"]},
-    "Oulton Park": {"aliases": ["oulton park", "oultonpark", "oulton"]},
+    "Oulton Park": {"aliases": ["oulton park", "oultonpark", "oulton", "oulten"]},
     "Phillip Island": {"aliases": ["phillip island", "phillipisland"]},
     "Pocono": {"aliases": ["pocono"]},
     "Portland": {"aliases": ["portland", "portland international raceway"]},
     "Red Bull Ring": {"aliases": ["red bull ring", "redbullring", "spielberg", "rbr"]},
     "Road America": {"aliases": ["road america", "roadamerica", "ramerica", "rdamerica", "roadam", "ramer"], "exact": ["roadamerica full"]},
-    "Road Atlanta": {"aliases": ["road atlanta", "roadatlanta", "rdatlanta", "michelin raceway"], "exact": ["roadatlanta full"]},
+    "Road Atlanta": {"aliases": ["road atlanta", "roadatlanta", "rdatlanta", "r atlanta", "ratlanta", "michelin raceway"], "exact": ["roadatlanta full"]},
     "Rudskogen": {"aliases": ["rudskogen", "rudskogen motorsenter"]},
     "Sachsenring": {"aliases": ["sachsenring"]},
     "Sebring": {"aliases": ["sebring", "sbr"], "exact": ["sebring international"]},
     "Sebring Club": {"aliases": ["sebring club"], "exact": ["sebring club"]},
     "Silverstone": {"aliases": ["silverstone"], "exact": ["silverstone 2019 gp", "silverstone 2019 international"]},
-    "Snetterton": {"aliases": ["snetterton"]},
+    "Snetterton": {"aliases": ["snetterton", "setterton"]},
     "Sonoma": {"aliases": ["sonoma"]},
     "Spa": {
       "aliases": ["spa", "spa francorchamps", "spagp", "spa gp"],
@@ -148,5 +148,16 @@
     "Zandvoort": {"aliases": ["zandvoort", "zand", "circuit park zandvoort"], "exact": ["zandvoort 2023 gp"]},
     "Zolder": {"aliases": ["zolder"]}
   },
-  "rules": []
+  "rules": [
+    {
+      "pattern": "^Garage 61/Data packs/26S4 W01 GTE-Sprint [^/]+ Nurb Combined/",
+      "track": "Nurb Combined 24H",
+      "why": "The matching Corvette GTE Track Titan/2026/Season 4/Week 1 pack explicitly names Nurburgring Combined - Gesamtstrecke 24h. GTE-Sprint is the series name, not the GP Sprint layout."
+    },
+    {
+      "pattern": "^Garage 61/Data packs/26S4 W01 Britcar [^/]+/",
+      "track": "Silverstone",
+      "why": "2026 Britcar 24 is at Silverstone; these GnG week-one packs omit the track name. Official event calendar: https://www.iracing.com/special-events/"
+    }
+  ]
 }

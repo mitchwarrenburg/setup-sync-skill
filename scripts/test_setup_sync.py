@@ -81,6 +81,34 @@ class SeasonTests(unittest.TestCase):
 
 
 class TrackTests(unittest.TestCase):
+    def test_gng_road_atlanta_abbreviation(self):
+        for car in ("BMWGTP", "Caddy", "499P"):
+            for suffix in ("", " WET"):
+                with self.subTest(car=car, suffix=suffix):
+                    self.assertEqual(where(f"Garage 61/Data packs/26S4 W02 IMSA {car} RAtlanta{suffix}/"
+                                           f"26S4-W02-GnG-RAtlanta-{car}-Endu-Safe.sto"), "Road Atlanta")
+        self.assertEqual(where("Atlanta Motor Speedway/setup.sto"), "Atlanta")
+
+    def test_gng_season4_week1_gte_combined_layout(self):
+        for car in ("BMW", "Corvette", "Porsche"):
+            with self.subTest(car=car):
+                self.assertEqual(where(f"Garage 61/Data packs/26S4 W01 GTE-Sprint {car} Nurb Combined/"
+                                       "26S4-W01-GnG-NurbCombined-Q.sto"), "Nurb Combined 24H")
+        self.assertEqual(where("Track Titan/2026/Season 4/Week 1/"
+                               "Nurburgring Combined - Gesamtstrecke 24h/HYMO_26S4_GTE_C8_Nords_cQ.sto"),
+                         "Nurb Combined 24H")
+
+    def test_gng_snetterton_misspelling(self):
+        self.assertEqual(where("Garage 61/Data packs/26S4 W03 TCR Audi Setterton 200/setup.sto"), "Snetterton")
+
+    def test_gng_season4_week1_missing_and_misspelled_tracks(self):
+        for car in ("Acura", "AstonGT4", "BMWGT3", "Corvette", "Ferrari", "Ford", "Mclaren", "PorscheGT4", "PorscheGT3"):
+            with self.subTest(car=car):
+                self.assertEqual(where(f"Garage 61/Data packs/26S4 W01 Britcar {car}/26S4-W01-GnG-{car}-Britcar-Q.sto"), "Silverstone")
+        self.assertIsNone(where("Garage 61/Data packs/26S4 W02 Britcar Acura/setup.sto"))
+        for pack in ("26S4 W01 CATERHAM 420 R CUP", "26S4 W01 CATERHAM 420 R CUP WET"):
+            self.assertEqual(where(f"Garage 61/Data packs/{pack}/26S4-W01-GnG-Oulten-Caterham420R-Q-Safe.sto"), "Oulton Park")
+
     def test_gng_pack_names(self):
         cases = {
             "26S3 W01 DTM Ferrari SpaGP": "Spa", "26S3 W01 Watkins6H Ferrari": "Watkins Glen",
