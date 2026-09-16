@@ -176,6 +176,19 @@ class TrackTests(unittest.TestCase):
         self.assertEqual(where("Coach Dave Academy/CDA 26S3 SUZ1000 296GT3 SUZ E01.sto"), "Suzuka")
         self.assertIsNone(where("MG/26S3.SOMEWHERE.MUSTANGGT4.R.sto"))
 
+    def test_coach_dave_silverstone_code_matches_named_week_folders(self):
+        # These flat files match the bytes in their explicitly named Silverstone folders.
+        for series, folder, variants in (
+            ("BC24", "2026 iRacing Britcar 24", ("E01", "EC01", "Q01", "QC01")),
+            ("GT3", "26S4 Simucube GT3 Series", ("E01", "EC01", "Q01", "QC01", "S01", "SC01")),
+        ):
+            for variant in variants:
+                name = f"CDA 26S4 {series} 296GT3 SIL {variant}.sto"
+                with self.subTest(name=name):
+                    self.assertEqual(where(f"Coach Dave Academy/{name}"), "Silverstone")
+                    self.assertEqual(where(f"{folder}/Week 1 (Silverstone Circuit - Grand Prix)/{name}"),
+                                     "Silverstone")
+
     def test_destination_folder_names_resolve_fully(self):
         for name, expected in {"LeMans": "Le Mans", "mexicocity gp": "Mexico City", "daytona 2011 road": "Daytona",
                                "Nurb NEC": "Nurb VLN", "Nord VLN": "Nurb VLN", "Nurb24": "Nurb Combined 24H",

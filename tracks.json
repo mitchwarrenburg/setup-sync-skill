@@ -120,7 +120,7 @@
     "Sachsenring": {"aliases": ["sachsenring"]},
     "Sebring": {"aliases": ["sebring", "sbr"], "exact": ["sebring international"]},
     "Sebring Club": {"aliases": ["sebring club"], "exact": ["sebring club"]},
-    "Silverstone": {"aliases": ["silverstone"], "exact": ["silverstone 2019 gp", "silverstone 2019 international"]},
+    "Silverstone": {"aliases": ["silverstone", "sil"], "exact": ["silverstone 2019 gp", "silverstone 2019 international"]},
     "Snetterton": {"aliases": ["snetterton", "setterton"]},
     "Sonoma": {"aliases": ["sonoma"]},
     "Spa": {
