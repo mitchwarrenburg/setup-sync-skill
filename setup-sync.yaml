@@ -22,4 +22,4 @@ defaults:
   # --clean-target-seasons N overrides the count without enabling cleanup on its own.
   clean-target:
     enabled: true
-    past-season-count: 2
+    past-season-count: 3
