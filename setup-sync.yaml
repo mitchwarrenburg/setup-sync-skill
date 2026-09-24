@@ -17,9 +17,11 @@ defaults:
       - "/P1Doks"
       - "/Track Titan"
 
-  # Recycle target track-folder setups labelled this many seasons or more before the current
-  # one (2 at 26S3 removes 26S1 and older). --clean-target enables this for one run;
-  # --clean-target-seasons N overrides the count without enabling cleanup on its own.
+  # Move target track-folder setups labelled this many seasons or more before the current one
+  # into that track folder's Archive folder (2 at 26S3 archives 26S1 and older). --clean-target
+  # enables this for one run; --clean-target-seasons N overrides the count without enabling
+  # cleanup on its own. Every track folder also gets Custom and Archive folders; Custom is never
+  # touched.
   clean-target:
     enabled: true
     past-season-count: 3

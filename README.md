@@ -5,10 +5,13 @@ A Claude Code and Codex skill that keeps iRacing team setup folders current. Set
 MG) each install into their own layout under `Documents\iRacing\setups\<car>`. setup-sync reads
 all of them, keeps the current season or newer, works out each file's track and layout, and copies
 it directly into one flat folder per track inside each configured target folder (by default two
-Garage 61 team folders), so every teammate finds the same setups in the same place.
+Garage 61 team folders), so every teammate finds the same setups in the same place. Setups titled
+`fixed` (`fixed.sto`, any case) are never copied.
 
-The agent does the parts that need judgement: it looks up the current season on the web, and
-records any new track spelling or layout decision in `tracks.json`, so the next run is automatic.
+The agent does the parts that need judgement: it looks up the current season on the web and
+fixes every unrecognized name in `tracks.json`, so the next run is automatic. It adds clear
+aliases (`Barca`) and new tracks (`Cadwell Park`) itself, and asks you about edge cases such as
+event codes (`PLM`).
 
 ## Requirements
 
@@ -59,9 +62,13 @@ without changing setup files:
   paths matching `clean-source.exclude`. This includes loose files, non-setup files and whole
   provider folders, after all copies have been verified. `--clean-source-exclude GLOB` is
   repeatable and replaces the configured exclusion list for that run.
-- `--clean-target` enables recycling old setups directly in target track folders.
-  `--clean-target-seasons N` overrides `clean-target.past-season-count` (default 2): at 26S3,
-  2 removes 26S1 and older; 1 removes 26S2 and older. The count alone does not enable cleanup.
+- `--clean-target` enables moving old setups directly in target track folders into each track
+  folder's `Archive` folder. `--clean-target-seasons N` overrides
+  `clean-target.past-season-count` (default 2): at 26S3, 2 archives 26S1 and older; 1 archives
+  26S2 and older. The count alone does not enable cleanup.
+
+Every track folder in a target gets a `Custom` and an `Archive` folder when it lacks one, whether
+or not cleanup is enabled. setup-sync never writes to, moves from or removes anything in `Custom`.
 
 Set a mode's `enabled` setting to `false` to disable it unless its flag is passed. Exclusion globs are
 case-insensitive and relative to the car folder; a leading `/` is optional. `*`, `?` and `[]`

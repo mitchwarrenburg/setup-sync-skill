@@ -3,7 +3,9 @@
 
 Applies to all cars by default; --car selects cars and --dry-run previews without writing setups.
 It is a sync: each setup lands directly in its track folder,
-overwriting a same-named file there. Folders already inside the target folders are left alone.
+overwriting a same-named file there. Folders already inside the target folders are left alone,
+except that every track folder gets a Custom and an Archive folder: nothing is ever written to
+Custom, and target cleanup moves old setups into Archive. Setups titled "fixed" are never copied.
 Target folders and optional source/target cleanup come from setup-sync.yaml; flags override them
 for one run. Replaced and removed files and folders go to the Recycle Bin.
 Workflow and rules: ../SKILL.md.
@@ -37,6 +39,9 @@ SETUP_EXTENSIONS = (".sto",)
 HASH_CHUNK_BYTES = 1 << 20
 VERBOSE_LIST_LIMIT = 40                 # file lines per car and section under --verbose
 KINDS = ("copy", "overwrite", "present")
+NEVER_COPIED = "fixed"                  # a setup titled this (any case) is never copied, wherever it is
+CUSTOM_DIR = "Custom"                   # made in every track folder, then never touched
+ARCHIVE_DIR = "Archive"                 # made in every track folder; target cleanup moves old setups here
 FO_DELETE = 0x0003
 RECYCLE_FLAGS = 0x0004 | 0x0010 | 0x0040 | 0x0400   # FOF_SILENT | NOCONFIRMATION | ALLOWUNDO | NOERRORUI
 
@@ -88,6 +93,22 @@ def discard_inside_car(path: Path, car_dir: Path) -> None:
     discard(path)
 
 
+def archive_inside_car(path: Path, car_dir: Path) -> bool:
+    """Move a target setup into its track folder's Archive folder, keeping its file date.
+
+    A same-named archived copy is replaced and goes to the Recycle Bin, as the sync treats same
+    names. Returns whether one was replaced.
+    """
+    destination = path.parent / ARCHIVE_DIR / path.name
+    validate_cleanup_path(path, car_dir)
+    validate_cleanup_path(destination, car_dir)
+    replaced = destination.is_file()
+    if replaced:
+        discard(destination)
+    path.rename(destination)        # never overwrites: a file that appeared meanwhile stops the run
+    return replaced
+
+
 @dataclass
 class Source:
     path: Path
@@ -118,25 +139,32 @@ class Action:
 class TeamIndex:
     """One target folder of one car: its track folders and the setups directly inside them.
 
-    Only a track folder's own files are read or written. Its subfolders, folders that do not name a
-    track and loose files beside them are left exactly as they are.
+    Only a track folder's own files are read or written. Its subfolders (apart from creating Custom
+    and Archive), folders that do not name a track and loose files beside them are left exactly as
+    they are.
     """
 
     def __init__(self, root: Path, table: TrackTable, extensions: tuple[str, ...]):
         self.table = table
         self.folders: dict[str, str] = {}               # canonical track -> existing folder name
         self.files: dict[str, dict[str, Path]] = {}     # track folder (lower) -> file name (lower) -> setup
+        self.tracks: list[str] = []                     # every existing track folder, named as on disk
         self.untouched: list[str] = []                  # folders that do not name a track
         candidates: dict[str, list[tuple[bool, int, str]]] = defaultdict(list)
+        own_names = {name.lower(): name for name in table.destinations}
         for child in sorted(p for p in root.iterdir() if p.is_dir()):
             match = table.resolve(child.name)
             canonical = (table.canonical(match.family, match.variant if match.explicit else None)
                          if match is not None and match.full else None)
+            # A folder named as this tool names a track is one, even when that name alone only
+            # suggests a layout in provider names ("Nordschleife"): folder_for() writes into it.
+            canonical = canonical or own_names.get(child.name.lower())
             if canonical is None:
                 self.untouched.append(child.name)
                 continue
             setups = {p.name.lower(): p for p in child.iterdir() if p.is_file() and p.suffix.lower() in extensions}
             self.files[child.name.lower()] = setups
+            self.tracks.append(child.name)
             candidates[canonical].append((child.name != canonical, -len(setups), child.name))
         for canonical, options in candidates.items():
             self.folders[canonical] = sorted(options)[0][2]    # exact spelling, then fullest, then name
@@ -211,6 +239,9 @@ def plan_car(car_dir: Path, targets: list[str], table: TrackTable, args) -> dict
     unresolved: list[Source] = []
     for path in iter_setups(car_dir, args.extensions, targets):
         relative = path.relative_to(car_dir).as_posix()
+        if path.stem.strip().lower() == NEVER_COPIED:
+            excluded.append((relative, f"titled '{NEVER_COPIED}': never copied"))
+            continue
         folders, stem = list(Path(relative).parts[:-1]), path.stem
         rule = table.rule_for(relative)
         if rule and rule.get("skip"):
@@ -264,7 +295,13 @@ def plan_car(car_dir: Path, targets: list[str], table: TrackTable, args) -> dict
             else:
                 kind = "present" if sha256(existing) == sha256(source.path) else "overwrite"
                 actions.append(Action(kind, target, folder, False, source, existing))
-        clean: list[tuple[Path, str]] = []
+        new_tracks = sorted({a.folder for a in actions if a.team == target and a.new_folder})
+        create = [root / track / name for track in [*index.tracks, *new_tracks]
+                  for name in (CUSTOM_DIR, ARCHIVE_DIR) if not (root / track / name).is_dir()]
+        for path in create:
+            if path.exists():
+                raise ConfigError(f"{path} must be a folder: rename or move that file")
+        archive: list[tuple[Path, str, bool]] = []      # setup, its label, replaces an archived copy
         if cutoff is not None:
             for setups in index.files.values():
                 for path in setups.values():
@@ -272,8 +309,12 @@ def plan_car(car_dir: Path, targets: list[str], table: TrackTable, args) -> dict
                         continue        # a current setup, whatever season its name carries
                     label = full_label(path.stem, max_year)
                     if label is not None and label <= cutoff:
-                        clean.append((path, str(label)))
-        team_plans.append({"team": target, "root": root, "untouched": index.untouched, "clean": clean})
+                        destination = path.parent / ARCHIVE_DIR / path.name
+                        validate_cleanup_path(path, car_dir)
+                        validate_cleanup_path(destination, car_dir)
+                        archive.append((path, str(label), destination.is_file()))
+        team_plans.append({"team": target, "root": root, "untouched": index.untouched, "create": create,
+                           "archive": archive})
     return {"car": car_dir.name, "dir": car_dir, "total": len(included) + len(excluded) + len(unresolved),
             "included": included, "excluded": excluded, "unresolved": unresolved, "actions": actions,
             "teams": team_plans, "notes": sorted(notes), "missing_teams": missing, "cutoff": cutoff,
@@ -295,8 +336,12 @@ def print_plan(plan: dict, verbose: bool) -> None:
         root, actions = team["root"], by_team.get(team["team"], [])
         kinds = Counter(a.kind for a in actions)
         parts = [f"{kinds[k]} {k}" for k in KINDS if kinds[k]]
-        if team["clean"]:
-            parts.append(f"{len(team['clean'])} to clean from target")
+        if team["archive"]:
+            replacing = sum(1 for *_, replaces in team["archive"] if replaces)
+            parts.append(f"{len(team['archive'])} to archive"
+                         + (f" ({replacing} replacing an archived copy)" if replacing else ""))
+        if team["create"]:
+            parts.append(f"{len(team['create'])} Custom/Archive folders to create")
         print(f"   {team['team']}: " + (", ".join(parts) or "nothing to do"))
         folders: dict[str, Counter] = defaultdict(Counter)
         new_folders = {a.folder for a in actions if a.new_folder}
@@ -312,12 +357,16 @@ def print_plan(plan: dict, verbose: bool) -> None:
                 for action in actions:
                     if action.folder == folder and action.kind != "present":
                         print(f"        {action.kind:<9} {action.source.relative}  [{action.source.how}]")
-        if team["clean"]:
-            where = Counter(path.parent.name for path, _ in team["clean"])
-            print(f"     clean <= {plan['cutoff']}: " + ", ".join(f"{f} ({n})" for f, n in sorted(where.items())))
+        if team["archive"]:
+            where = Counter(path.parent.name for path, *_ in team["archive"])
+            print(f"     archive <= {plan['cutoff']}: " + ", ".join(f"{f} ({n})" for f, n in sorted(where.items())))
             if verbose:
-                for path, season in team["clean"][:VERBOSE_LIST_LIMIT]:
-                    print(f"        clean ({season}) {path.relative_to(root).as_posix()}")
+                for path, season, replaces in team["archive"][:VERBOSE_LIST_LIMIT]:
+                    print(f"        archive ({season}) {path.relative_to(root).as_posix()}"
+                          f"{' (replaces the archived copy)' if replaces else ''}")
+        if verbose:
+            for path in team["create"][:VERBOSE_LIST_LIMIT]:
+                print(f"        create {path.relative_to(root).as_posix()}")
         if verbose and team["untouched"]:
             print("     not track folders (left alone): " + ", ".join(team["untouched"]))
     if plan["clean_source"]:
@@ -341,7 +390,8 @@ def print_plan(plan: dict, verbose: bool) -> None:
 
 
 def apply_plans(plans: list[dict]) -> Counter:
-    """Verify all copies before cleaning targets, then sources. Every removal uses the Recycle Bin."""
+    """Verify all copies before creating Custom/Archive folders and archiving old target setups, then
+    clean sources. Every removal uses the Recycle Bin."""
     done: Counter = Counter()
     for plan in plans:
         for action in plan["actions"]:
@@ -358,13 +408,13 @@ def apply_plans(plans: list[dict]) -> Counter:
             done[action.kind] += 1
     for plan in plans:
         for team in plan["teams"]:
-            for path, _ in team["clean"]:
-                discard_inside_car(path, plan["dir"])
-                done["cleaned_target"] += 1
-            for folder in {path.parent for path, _ in team["clean"]}:
-                if not any(folder.iterdir()):
-                    discard_inside_car(folder, plan["dir"])
-                    done["emptied"] += 1
+            for folder in team["create"]:
+                folder.mkdir(exist_ok=True)
+                done["scaffolded"] += 1
+            for path, _, _ in team["archive"]:
+                if archive_inside_car(path, plan["dir"]):
+                    done["replaced_archive"] += 1
+                done["archived"] += 1
     for plan in plans:
         for path in plan["clean_source"]:
             discard_inside_car(path, plan["dir"])
@@ -380,8 +430,9 @@ def report_json(plan: dict) -> dict:
             "clean_source": [str(p) for p in plan["clean_source"]],
             "excluded": [{"relative": r, "reason": why} for r, why in plan["excluded"]],
             "unresolved": [source(s) for s in plan["unresolved"]],
-            "targets": [{"target": t["team"], "untouched": t["untouched"],
-                         "clean": [[str(p), season] for p, season in t["clean"]]} for t in plan["teams"]],
+            "targets": [{"target": t["team"], "untouched": t["untouched"], "create": [str(p) for p in t["create"]],
+                         "archive": [{"path": str(p), "season": season, "replaces_archived_copy": replaces}
+                                     for p, season, replaces in t["archive"]]} for t in plan["teams"]],
             "actions": [{"kind": a.kind, "target": a.team, "folder": a.folder, "new_folder": a.new_folder,
                          "path": str(a.target), **source(a.source)} for a in plan["actions"]]}
 
@@ -412,15 +463,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="car-relative glob to preserve during source cleanup; repeatable; "
                              "replaces defaults.clean-source.exclude for this run")
     parser.add_argument("--clean-target", action="store_true",
-                        help="enable recycling old setups directly inside target track folders")
+                        help="enable moving old setups directly inside target track folders into "
+                             "each track folder's Archive folder")
     parser.add_argument("--clean-target-seasons", type=season_count, metavar="N",
-                        help="clean target setups labelled N or more seasons before --season "
-                             "(2 at 26S3 removes 26S1 and older); overrides "
+                        help="archive target setups labelled N or more seasons before --season "
+                             "(2 at 26S3 archives 26S1 and older); overrides "
                              "defaults.clean-target.past-season-count (default 2); does not enable cleanup")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="the iRacing setups folder")
     parser.add_argument("--ext", action="append", help="setup extension; default .sto")
     parser.add_argument("--dry-run", action="store_true",
-                        help="preview copies, overwrites and cleanup without changing setups (default: apply)")
+                        help="preview copies, overwrites, new folders and cleanup without changing setups "
+                             "(default: apply)")
     parser.add_argument("--allow-unresolved", action="store_true", help="apply even if some files are unresolved")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--report", type=Path, help="write the full plan as JSON")
@@ -458,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
             if not car.is_dir():
                 parser.error(f"no car folder {car}")
     clean_note = (f" | clean source ({source_from})" if args.clean_source else " | no source cleanup")
-    clean_note += (f" | clean target <= {args.season.shifted(-args.clean_target_seasons)} "
+    clean_note += (f" | archive target <= {args.season.shifted(-args.clean_target_seasons)} "
                    f"({target_from}; season count from {seasons_from})" if args.clean_target else " | no target cleanup")
     print(f"setup-sync {args.season} or newer{clean_note} | root {args.root} | targets {', '.join(targets)}"
           f" | {'dry run' if args.dry_run else 'APPLY'}")
@@ -467,16 +520,17 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as error:
         parser.error(str(error))
     for plan in plans:
-        busy = plan["clean_source"] or any(t["clean"] for t in plan["teams"])
+        busy = plan["clean_source"] or any(t["archive"] for t in plan["teams"])
         if plan["included"] or plan["unresolved"] or busy or args.verbose or not all_cars:
             print_plan(plan, args.verbose)
     totals = Counter(a.kind for p in plans for a in p["actions"])
-    cleaned = sum(len(t["clean"]) for p in plans for t in p["teams"])
+    archived = sum(len(t["archive"]) for p in plans for t in p["teams"])
+    created = sum(len(t["create"]) for p in plans for t in p["teams"])
     cleaned_source = sum(len(p["clean_source"]) for p in plans)
     blocked = sum(len(p["unresolved"]) for p in plans)
     print(f"\nTotal: {totals['copy']} to copy, {totals['overwrite']} to overwrite, {totals['present']} already "
-          f"identical, {cleaned} target setups to clean, {cleaned_source} source files/folders to clean, "
-          f"{blocked} unresolved across {len(plans)} car(s).")
+          f"identical, {archived} target setups to archive, {created} Custom/Archive folders to create, "
+          f"{cleaned_source} source files/folders to clean, {blocked} unresolved across {len(plans)} car(s).")
     if args.report:
         args.report.write_text(json.dumps([report_json(p) for p in plans], indent=2), encoding="utf-8")
         print(f"Report: {args.report}")
@@ -486,9 +540,10 @@ def main(argv: list[str] | None = None) -> int:
         print("Refusing to apply: resolve the unresolved files (SKILL.md, 'Inference') or pass --allow-unresolved.")
         return 2
     done = apply_plans(plans)
-    print(f"Applied: {done['copy']} copied, {done['overwrite']} overwritten, {done['folders']} folders created; "
-          f"to the Recycle Bin: {done['overwrite']} replaced, {done['cleaned_target']} target setups cleaned, "
-          f"{done['cleaned_source']} source files/folders cleaned, {done['emptied']} emptied track folders.")
+    print(f"Applied: {done['copy']} copied, {done['overwrite']} overwritten, {done['folders']} track folders and "
+          f"{done['scaffolded']} Custom/Archive folders created, {done['archived']} target setups archived; "
+          f"to the Recycle Bin: {done['overwrite']} replaced, {done['replaced_archive']} archived copies replaced, "
+          f"{done['cleaned_source']} source files/folders cleaned.")
     return 0
 
 
